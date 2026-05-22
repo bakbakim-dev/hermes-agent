@@ -1,0 +1,14 @@
+name: personal-ops
+version: 1.0.0
+description: "Native Hermes personal operations tools for Todoist, ClickUp, Twilio, weather, Focus Guard, and security approvals."
+author: OpenAI
+kind: backend
+provides_tools:
+  - personal_todoist
+  - personal_focus_guard
+  - personal_runtime
+  - personal_adaptive_companion
+  - personal_clickup
+  - personal_twilio
+  - personal_weather
+  - personal_security
