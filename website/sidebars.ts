@@ -268,7 +268,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/mlops/mlops-huggingface-hub',
                     'user-guide/skills/bundled/mlops/mlops-inference-llama-cpp',
                     'user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness',
-                    'user-guide/skills/bundled/mlops/mlops-inference-obliteratus',
                     'user-guide/skills/bundled/mlops/mlops-models-segment-anything',
                     'user-guide/skills/bundled/mlops/mlops-inference-vllm',
                     'user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases',

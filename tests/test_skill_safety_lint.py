@@ -14,6 +14,10 @@ DISALLOWED_DEFAULT_SKILL_PATTERNS = [
     re.compile(r"\bauto[- ]?jailbreak\b", re.IGNORECASE),
     re.compile(r"\buncensored model\b", re.IGNORECASE),
     re.compile(r"\bunrestricted ai assistant\b", re.IGNORECASE),
+    re.compile(r"\brefusal[- ]removal\b", re.IGNORECASE),
+    re.compile(r"\bremove refusal behaviors\b", re.IGNORECASE),
+    re.compile(r"\bremove .*guardrails\b", re.IGNORECASE),
+    re.compile(r"\babliterate\b.*\brefusal", re.IGNORECASE),
 ]
 
 
