@@ -563,6 +563,15 @@ class SessionDB:
         cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
+        # Ensure aliveness table exists for heartbeat aggregation
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS aliveness (
+                date TEXT NOT NULL,
+                category TEXT NOT NULL,
+                count INTEGER DEFAULT 0,
+                PRIMARY KEY(date, category)
+            )
+        ''')
 
         # ── Declarative column reconciliation ──────────────────────────
         # Diff live tables against SCHEMA_SQL and ADD any missing columns.

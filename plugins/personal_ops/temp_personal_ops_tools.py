@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+logger = logging.getLogger(__name__)
 import re
 import random
 import hashlib
@@ -21,6 +23,26 @@ try:
     import yaml
 except Exception:  # pragma: no cover - optional dependency
     yaml = None
+
+try:
+    from .gym_attendance import record_arrival as _gym_record_arrival
+    from .gym_attendance import record_departure as _gym_record_departure
+    from .gym_attendance import monthly_report as _gym_monthly_report
+    from .gym_attendance import workout_task_for_day as _gym_workout_task_for_day
+except Exception:  # pragma: no cover - gym attendance is best-effort
+    _gym_record_arrival = None  # type: ignore[assignment]
+    _gym_record_departure = None  # type: ignore[assignment]
+    _gym_monthly_report = None  # type: ignore[assignment]
+    _gym_workout_task_for_day = None  # type: ignore[assignment]
+
+from .runtime_context_tools import runtime_context_budget_audit as _runtime_context_budget_audit
+from .runtime_context_tools import runtime_context_contributors_report as _runtime_context_contributors_report
+from .runtime_context_tools import runtime_memory_tier as _runtime_memory_tier
+from .runtime_context_tools import runtime_no_agent_cron_plan as _runtime_no_agent_cron_plan
+from .runtime_context_tools import runtime_profile_prune_plan as _runtime_profile_prune_plan
+from .runtime_context_tools import runtime_secret_inventory as _runtime_secret_inventory
+from .runtime_context_tools import runtime_tool_router_simulate as _runtime_tool_router_simulate
+from .runtime_context_tools import runtime_tool_router_status as _runtime_tool_router_status
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
 APPROVALS_PATH = HERMES_HOME / "personal_ops_approvals.json"
@@ -52,7 +74,8 @@ CALENDAR_STATE_PATH = HERMES_HOME / "calendar_state.json"
 ORCHESTRATION_JOBS_DB_PATH = HERMES_HOME / "orchestration_jobs.sqlite3"
 CRON_JOBS_PATH = HERMES_HOME / "cron" / "jobs.json"
 RUNTIME_SERVICE_NAME = "hermes-gateway.service"
-ADAPTIVE_COMPANION_REPEAT_COOLDOWN_MINUTES = 45
+ADAPTIVE_COMPANION_REPEAT_COOLDOWN_MINUTES = 90
+ADAPTIVE_COMPANION_SAME_TASK_COOLDOWN_MINUTES = 360
 ADAPTIVE_COMPANION_DAILY_TASK_PATTERN_LIMIT = 2
 ADAPTIVE_COMPANION_DAILY_TASK_LIMIT = 3
 ADAPTIVE_COMPANION_REASON_ANCHOR_TTL_MINUTES = 20
@@ -330,20 +353,16 @@ def _focus_guard_pick_most_important_task(tasks: List[Dict[str, Any]]) -> Option
 
 
 def _focus_guard_classify_task(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    text = " ".join(
-        part
-        for part in [
-            str(task.get("content") or ""),
-            str(task.get("description") or ""),
-        ]
-        if part
-    ).lower()
+    # We only match semantic patterns against the task title (content).
+    # Using the description causes false positives when the description contains instructions
+    # like "avoid swinging" or "avoid soreness" or "machine setup".
+    text = str(task.get("content") or "").strip().lower()
 
     task_title = str(task.get("content") or "").strip()
 
     # Load rules state from todoist_rules.json
     rules_state = _todoist_rules_read_state()
-    
+
     # 1. Check direct task metadata overrides
     task_key = str(task.get("task_key") or _operator_task_id(task) or task_title.lower().strip())
     metadata = dict(rules_state.get("task_metadata") or {}).get(task_key) or {}
@@ -369,7 +388,7 @@ def _focus_guard_classify_task(task: Dict[str, Any]) -> Optional[Dict[str, Any]]
         label = str(rule.get("label") or "").strip().lower()
         if not label:
             continue
-        
+
         matched = False
         if pattern and pattern in text:
             matched = True
@@ -379,7 +398,7 @@ def _focus_guard_classify_task(task: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     matched = True
             except Exception:
                 pass
-                
+
         if matched:
             if label in ("avoid", "avoidance"):
                 return {
@@ -479,7 +498,57 @@ def _focus_guard_read_todoist_tasks(*, filter: Optional[str] = None) -> List[Dic
     with _http_client() as client:
         resp = client.get(f"{TODOIST_BASE}/tasks", headers=_todoist_headers(), params=params)
         resp.raise_for_status()
-        return (resp.json() or {}).get("results") or []
+        tasks = (resp.json() or {}).get("results") or []
+
+        filter_str = str(filter or "").strip().lower()
+        if filter_str:
+            from datetime import datetime, timedelta
+            today_str = _operator_local_date()
+            try:
+                today_dt = datetime.fromisoformat(today_str)
+                tomorrow_str = (today_dt + timedelta(days=1)).date().isoformat()
+            except Exception:
+                tomorrow_str = ""
+
+            filtered_tasks = []
+            for t in tasks:
+                labels = [str(l).lower() for l in t.get("labels") or []]
+                excluded_labels = {
+                    "exclude_workload", "reference", "hermes_hidden", "checklist_item", "duplicate",
+                    "someday", "maybe", "someday_maybe", "someday-maybe", "someday/maybe"
+                }
+                if any(l in excluded_labels for l in labels):
+                    continue
+
+                due = t.get("due")
+                if isinstance(due, dict) and due.get("date"):
+                    date_part = str(due["date"]).split("T")[0]
+                    is_recurring = due.get("is_recurring") is True
+
+                    # Skip overdue recurring routines to avoid past routine carryover clutter
+                    if is_recurring and date_part < today_str:
+                        continue
+
+                    if "today" in filter_str and "overdue" in filter_str:
+                        if date_part <= today_str:
+                            filtered_tasks.append(t)
+                    elif "today" in filter_str:
+                        if date_part == today_str:
+                            filtered_tasks.append(t)
+                    elif "overdue" in filter_str:
+                        if date_part < today_str:
+                            filtered_tasks.append(t)
+                    elif "tomorrow" in filter_str:
+                        if tomorrow_str and date_part == tomorrow_str:
+                            filtered_tasks.append(t)
+                    else:
+                        filtered_tasks.append(t)
+                else:
+                    if not any(k in filter_str for k in ["today", "overdue", "tomorrow"]):
+                        filtered_tasks.append(t)
+            tasks = filtered_tasks
+
+        return tasks
 
 
 def _adaptive_companion_default_state() -> Dict[str, Any]:
@@ -824,12 +893,11 @@ def _adaptive_companion_apply_reason_anchor(*, message: str, trigger: Dict[str, 
 
 
 def _adaptive_companion_task_context(trigger: Dict[str, Any]) -> str:
-    task_label = str(trigger.get("task_label") or "No clear top task").strip()
-    source = str(trigger.get("source") or "Todoist").strip() or "Todoist"
+    task_label = str(trigger.get("task_label") or "your main objective").strip()
     side_task = str(trigger.get("side_task_label") or "").strip()
     if side_task:
-        return f'{source} check: top task "{task_label}"; side task flagged "{side_task}".'
-    return f'{source} check: top task "{task_label}".'
+        return f'I noticed you\'re spending some time on "{side_task}", but your main focus right now is "{task_label}".'
+    return f'Checking in on your focus: your main priority is "{task_label}".'
 
 
 def _adaptive_companion_examples_for_task(task_label: str) -> List[str]:
@@ -843,7 +911,7 @@ def _adaptive_companion_examples_for_task(task_label: str) -> List[str]:
     if "family" in text or "handoff" in text:
         return [
             "confirm the next handoff detail",
-            "prepare one thing that prevents friction later",
+            "prepare one simple thing to make starting feel easier later",
             "send the one message that makes the next step clear",
         ]
     if "call" in text or "contact" in text or "follow up" in text:
@@ -855,7 +923,7 @@ def _adaptive_companion_examples_for_task(task_label: str) -> List[str]:
     return [
         "open the task",
         "do the first ten minutes",
-        "write down the next concrete action before switching tasks",
+        "write down what you'd like to do next before taking a break",
     ]
 
 
@@ -868,8 +936,8 @@ def _adaptive_companion_detailed_message(*, trigger: Dict[str, Any], state: Dict
     if variant == 0:
         lines = [
             context,
-            "Why I am mentioning it: I am comparing the top Todoist task against the easier-looking side work, not guessing from nowhere.",
-            "A useful next move would be:",
+            f"Let's focus on your main priority, '{task_label}', to build some great momentum.",
+            "A great next move to get started is simply to:",
             f"- {examples[0]}",
             f"- {examples[1]}",
             f"- {examples[2]}",
@@ -877,22 +945,23 @@ def _adaptive_companion_detailed_message(*, trigger: Dict[str, Any], state: Dict
     elif variant == 1:
         lines = [
             context,
-            "What I think is happening: the top task has real-world friction, while the other task is safer to think about.",
-            f"Example: if the top task is \"{task_label}\", a real step is not more planning. It is something visible like: {examples[0]}.",
-            f"After that: {examples[1]}.",
+            "Starting a big task is much easier when you focus strictly on a tiny, 2-minute step.",
+            f"Instead of over-planning '{task_label}', let's do something immediate and visible, like: {examples[0]}.",
+            f"Once that's done, you can easily: {examples[1]}.",
         ]
     else:
         lines = [
             context,
-            "Suggested micro-plan:",
+            "Here is a simple micro-plan to start:",
             f"1. {examples[0].capitalize()}.",
             f"2. {examples[1].capitalize()}.",
             f"3. {examples[2].capitalize()}.",
-            "Then stop and reassess instead of drifting into another support task.",
+            "Give this a shot first, then see how you feel!",
         ]
     if side_task:
-        lines.append(f"Hold off on \"{side_task}\" until one real step is done.")
+        lines.append(f"Let's temporarily pause on \"{side_task}\" while we get this first step done.")
     return "\n".join(lines)
+
 
 
 def _adaptive_companion_render_message(
@@ -926,94 +995,98 @@ def _adaptive_companion_render_message(
 
     if family == "stairs_not_elevator":
         options = (
-            [f"{context} The lower-friction task can wait. Do one visible step on {task_label} first.",
-             f"{context} Keep this grounded: one visible step on {task_label}, then reassess."]
+            [f"{context} The smaller side task can wait. Let's do just one tiny step on '{task_label}' first.",
+             f"{context} Let's keep this simple: one small, visible step on '{task_label}', then reassess."]
             if language == "plain"
-            else [f"{context} The easier-looking task may be a detour. Start with one visible step on {task_label}.",
-                  f"{context} Choose the smallest real step on {task_label} before support work."]
+            else [f"{context} The easier task might be a detour. Start with one visible step on '{task_label}' first.",
+                  f"{context} Let's choose the smallest first step on '{task_label}' before worrying about other tasks."]
         )
         return options[_adaptive_companion_variant_index(family=family, state=state, options_count=len(options))]
 
     if family == "comfort_callout":
-        return f"{context} Do the priority before the easier task."
+        return f"{context} Let's focus on your main priority first to get a clean win, before diving into the easier tasks."
 
     if family == "enemy_naming":
-        return f"{context} The risk here is turning the task into more thinking instead of one real action."
+        return f"{context} Sometimes we fall into the trap of overthinking or planning too much instead of just taking one simple, physical action to start. Let's make the first step easy and just do that."
 
     if family == "binary_frame":
         options = [
-            f"{context} Two choices now: do one visible step, or postpone it honestly.",
-            f"{context} Keep this simple: one concrete move, then reassess.",
+            f"{context} You have two wonderful, pressure-free options: take just one tiny step forward today, or reschedule it with zero guilt so it's not hanging over you.",
+            f"{context} Let's keep it beautifully simple: just one quick first step, and then you can decide what to do next.",
         ]
         return options[_adaptive_companion_variant_index(family=family, state=state, options_count=len(options))]
 
     if family == "hierarchy_enforcement":
         options = [
-            f"{context} Leave the side task alone until one real step is done." if trigger.get("side_task_label") else f"{context} Do that before support work.",
-            f"{context} Save support work for after one real step.",
+            f"{context} Let's temporarily pause on '{side_task}' and get one small priority step done on '{task_label}' first." if trigger.get("side_task_label") else f"{context} Let's get one small priority step done first.",
+            f"{context} Let's handle your main priority first, and save the support tasks as a satisfying reward for later.",
         ]
         return options[_adaptive_companion_variant_index(family=family, state=state, options_count=len(options))]
 
     if family == "identity_challenge":
         if pattern_label == "meta_deflection":
-            return f"{context} This looks like analysis replacing action. The useful move is one small, visible step."
-        return f"{context} Keep the task concrete: one visible step, then reassess."
+            return f"{context} Planning is wonderful, but sometimes it becomes a way of delaying the work. Let's pick one small, physical step and start there."
+        return f"{context} You've got this. Let's keep the next step beautifully simple and concrete: just one small action, then see how you feel."
 
     if family == "grounded_reset":
         suggestion = str(recovery.get("suggestion") or "").strip()
         if suggestion:
             return suggestion.replace("the real task", task_label)
-        return f"You're not confused. You're overloaded. Shrink {task_label} to the first real step and do that."
+        return f"Take a deep breath—you are doing great, but you might just have a lot on your plate today. Let's shrink '{task_label}' down to the absolute easiest first step and do just that, pressure-free."
 
     if family == "earned_respect":
         note = str(respect.get("note") or "").strip()
         if note:
-            return f"{note} Stay on {task_label}."
-        return f"Good. Stay on {task_label}. Do not hand the day back to comfort now."
+            return f"{note} Let's stay focused on '{task_label}'."
+        return f"You're showing incredible consistency with '{task_label}'. Let's keep that beautiful momentum going!"
 
     if family == "pattern_mirror":
         if pattern_label == "false_prep":
             options = [
-                f"{context} This looks like prep replacing action. Start the top task before more setup.",
-                f"{context} You need one real contact point with the top task, not more setup.",
+                f"{context} It's easy to get caught up in getting ready to get ready. Let's skip the extra setup and take just one tiny, direct step on your top task instead!",
+                f"{context} You don't need more setup to start '{task_label}'. Let's just make one tiny, simple point of contact with it today.",
             ]
             return options[_adaptive_companion_variant_index(family=family, state=state, options_count=len(options))]
         if pattern_label == "meta_deflection":
             options = [
-                f"{context} This looks like analysis replacing action. Pick one visible step.",
-                f"{context} The useful move is not more framing; it is one concrete next action.",
+                f"{context} Sometimes we overthink things when they feel heavy. Let's make it easy: just pick one tiny, physical step and start there!",
+                f"{context} You've done all the planning you need. The absolute best move right now is just one simple, concrete next action.",
             ]
             return options[_adaptive_companion_variant_index(family=family, state=state, options_count=len(options))]
         if pattern_label == "smart_detour":
             options = [
-                f"{context} Start with one visible step on the top task.",
-                f"{context} I am flagging this because the side task looks easier than the top task." if trigger.get("side_task_label") else f"{context} I am flagging this because the top task is still open.",
+                f"{context} Let's start with just one quick, tiny step on '{task_label}' first to build momentum.",
+                f"{context} Just a gentle nudge because '{side_task}' might feel a bit more comfortable, but '{task_label}' is still your main priority." if trigger.get("side_task_label") else f"{context} Just a gentle check-in because '{task_label}' is still waiting for its first step.",
             ]
             return options[_adaptive_companion_variant_index(family=family, state=state, options_count=len(options))]
         if evidence:
-            return f"{context} The side item may be easier because {task_label} has friction. Treat '{evidence}' as secondary until one visible step is done."
-        return f"{context} The task has friction. Shrink it to one visible step."
+            if trigger.get("kind") == "focus_drift" or evidence == "most important task still open":
+                return f"{context} Your top task '{task_label}' might feel a bit heavy or intimidating right now. That's completely okay! Let's put everything else on pause until you take just one tiny, comfortable step on it."
+            return f"{context} It's completely normal to want to do '{evidence}' first because '{task_label}' feels a bit heavy. Let's put '{evidence}' on hold until you take just one single, easy step on '{task_label}' first."
+        return f"{context} If '{task_label}' feels a bit daunting, let's take all the pressure off and shrink it down to a tiny 2-minute step."
+
 
     if language == "plain" and length == "one_line":
         if str(threshold.get("level") or "") == "high":
-            return f"{context} Do one visible step now."
+            return f"{context} Let's do just one tiny step now."
         if pattern_label == "friction_avoidance":
-            return f"{context} Start the top task."
-        return f"{context} Do the top task."
+            return f"{context} Let's take one quick step on '{task_label}'."
+        return f"{context} Let's make '{task_label}' our next gentle focus."
 
     if length in {"long", "medium"} and pattern_label == "meta_deflection":
         message = (
-            f"{context} This looks like analysis replacing action. "
-            f"I am not treating that as a character problem; it is a task-friction signal. "
-            f"The useful move is to name the smallest visible step on {task_label}, do that, then reassess."
+            f"{context} Sometimes we overthink things when a task feels a bit heavy. "
+            f"There's absolutely no pressure here; it's just a natural signal that it might feel daunting to start. "
+            f"The best move is to pick the absolute easiest, smallest action on '{task_label}', do just that, then decide what's next."
         )
+
         return _adaptive_companion_apply_reason_anchor(message=message, trigger=trigger, state=state, strategy=strategy)
 
     if language == "conversational":
-        message = f"{context} Do one concrete next step, then reassess."
+        message = f"{context} Take just one small step now, and see how you feel."
         return _adaptive_companion_apply_reason_anchor(message=message, trigger=trigger, state=state, strategy=strategy)
 
-    message = f"{context} Start now."
+    message = f"{context} Let's take just one tiny step to begin."
     return _adaptive_companion_apply_reason_anchor(message=message, trigger=trigger, state=state, strategy=strategy)
 
 
@@ -1040,31 +1113,68 @@ def _adaptive_companion_should_suppress(
     if not task_label or not pattern_label:
         return None
 
-    cooldown = timedelta(minutes=ADAPTIVE_COMPANION_REPEAT_COOLDOWN_MINUTES)
     recent = list(state.get("recent_interventions") or [])
     if not recent:
         return None
 
     latest = recent[-1]
-    latest_pattern = str(((latest.get("pattern") or {}).get("label") or "")).strip().lower()
-    if str(latest.get("task_label") or "").strip().lower() == task_label and latest_pattern == pattern_label:
-        sent_at_raw = str(latest.get("sent_at") or latest.get("created_at") or "").strip()
-        if sent_at_raw:
+    latest_task_label = str(latest.get("task_label") or "").strip().lower()
+
+    # 0. SAME OBSERVATION SUPPRESSION (Grounded task state-aware suppression)
+    # If the top task and the side task are identical, and no tasks have been completed,
+    # deleted, or added since the last intervention, suppress the repeat nudge.
+    latest_task_id = str(latest.get("task_id") or "").strip()
+    current_task_id = str(trigger.get("task_id") or "").strip()
+    latest_side_task_id = str(latest.get("side_task_id") or "").strip()
+    current_side_task_id = str(trigger.get("side_task_id") or "").strip()
+
+    if latest_task_id == current_task_id and latest_side_task_id == current_side_task_id and (latest_task_id or latest_side_task_id):
+        latest_active_ids = latest.get("active_task_ids") or []
+        if latest_active_ids:
             try:
-                sent_at = datetime.fromisoformat(sent_at_raw.replace("Z", "+00:00"))
+                current_tasks = _focus_guard_read_todoist_tasks()
+                current_active_ids = [str(t.get("id")) for t in current_tasks if t.get("id")]
+                if set(current_active_ids) == set(latest_active_ids):
+                    return {
+                        "reason": "same_task_no_state_change",
+                        "scope": "same_task",
+                    }
             except Exception:
-                sent_at = None
-            if sent_at is not None:
-                if sent_at.tzinfo is None:
-                    sent_at = sent_at.replace(tzinfo=timezone.utc)
-                elapsed = now - sent_at
-                if elapsed < cooldown:
-                    remaining = max(int((cooldown - elapsed).total_seconds() // 60), 0)
+                pass
+
+    sent_at_raw = str(latest.get("sent_at") or latest.get("created_at") or "").strip()
+    if sent_at_raw:
+        try:
+            sent_at = datetime.fromisoformat(sent_at_raw.replace("Z", "+00:00"))
+        except Exception:
+            sent_at = None
+        if sent_at is not None:
+            if sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=timezone.utc)
+            elapsed = now - sent_at
+
+            # 1. Same task cooldown check (increased to 180 mins to avoid repeated briefs on same task)
+            if latest_task_label == task_label:
+                same_task_cooldown = timedelta(minutes=ADAPTIVE_COMPANION_SAME_TASK_COOLDOWN_MINUTES)
+                if elapsed < same_task_cooldown:
+                    remaining = max(int((same_task_cooldown - elapsed).total_seconds() // 60), 0)
                     return {
                         "reason": "cooldown",
-                        "cooldown_minutes": ADAPTIVE_COMPANION_REPEAT_COOLDOWN_MINUTES,
+                        "cooldown_minutes": ADAPTIVE_COMPANION_SAME_TASK_COOLDOWN_MINUTES,
                         "minutes_remaining": remaining,
+                        "scope": "same_task",
                     }
+
+            # 2. General spacing cooldown (90 mins to ensure briefs are spaced out generally)
+            general_cooldown = timedelta(minutes=ADAPTIVE_COMPANION_REPEAT_COOLDOWN_MINUTES)
+            if elapsed < general_cooldown:
+                remaining = max(int((general_cooldown - elapsed).total_seconds() // 60), 0)
+                return {
+                    "reason": "cooldown",
+                    "cooldown_minutes": ADAPTIVE_COMPANION_REPEAT_COOLDOWN_MINUTES,
+                    "minutes_remaining": remaining,
+                    "scope": "general",
+                }
 
     local_tz = timezone.utc
     if ZoneInfo is not None:
@@ -1521,7 +1631,26 @@ def _focus_guard_telegram_post(method: str, payload: Dict[str, Any]) -> Dict[str
             json=payload,
         )
         resp.raise_for_status()
-        return resp.json() or {"ok": True}
+        response = resp.json() or {"ok": True}
+    if method == "sendMessage" and isinstance(payload, dict):
+        try:
+            from plugins.personal_ops.nudge_receipts import log_nudge_receipt
+            result = response.get("result") if isinstance(response, dict) else {}
+            message_id = result.get("message_id") if isinstance(result, dict) else None
+            chat = result.get("chat") if isinstance(result, dict) else {}
+            resolved_chat_id = payload.get("chat_id") or (chat.get("id") if isinstance(chat, dict) else None)
+            log_nudge_receipt(
+                chat_id=resolved_chat_id,
+                message_id=message_id,
+                text=str(payload.get("text") or ""),
+                message_class=str(payload.get("message_class") or "telegram_message"),
+                source="temp_personal_ops_tools._focus_guard_telegram_post",
+                buttons=payload.get("reply_markup"),
+                metadata={"method": method, "disable_notification": payload.get("disable_notification")},
+            )
+        except Exception as exc:
+            logger.warning("Failed to log nudge receipt: %s", exc)
+    return response
 
 
 def _telegram_feedback_callback(label: str) -> str:
@@ -1534,7 +1663,7 @@ def _telegram_inline_keyboard(buttons: Optional[List[Any]]) -> Optional[Dict[str
     if not buttons:
         return None
     rows = []
-    
+
     # Check if buttons is already a list of lists (explicit rows)
     if buttons and isinstance(buttons[0], list):
         for row_data in buttons:
@@ -1556,7 +1685,7 @@ def _telegram_inline_keyboard(buttons: Optional[List[Any]]) -> Optional[Dict[str
             if row:
                 rows.append(row)
         return {"inline_keyboard": rows}
-        
+
     row = []
     for btn in buttons:
         if isinstance(btn, dict):
@@ -1587,9 +1716,9 @@ def _build_telegram_reply_markup(buttons: Optional[List[Any]]) -> Optional[Any]:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     except ImportError:
         return None
-    
+
     rows = []
-    
+
     # Check if buttons is already a list of lists (explicit rows)
     if buttons and isinstance(buttons[0], list):
         for row_data in buttons:
@@ -1610,7 +1739,7 @@ def _build_telegram_reply_markup(buttons: Optional[List[Any]]) -> Optional[Any]:
             if row:
                 rows.append(row)
         return InlineKeyboardMarkup(rows)
-        
+
     row = []
     for btn in buttons:
         if isinstance(btn, dict):
@@ -1638,14 +1767,14 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
     import json
     from datetime import datetime, timezone
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    
+
     parts = data.split(":")
     if len(parts) < 2:
         await query.answer()
         return
-        
+
     action = parts[1]
-    
+
     if action == "location":
         await query.answer()
         if len(parts) >= 3:
@@ -1653,18 +1782,18 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
             _handle_location_update({"location": loc, "source": "telegram-callback"})
             cleanup_res = _run_auto_cleanup_routines()
             logs = cleanup_res.get("logs", [])
-            
+
             msg = f"📍 <b>Location updated to: {loc}</b>"
             if logs:
                 msg += "\n\n🧹 Auto-Cleanup triggered:\n" + "\n".join([f"• {_escape_html(l)}" for l in logs])
-                
+
             loc_buttons = [
                 {"text": "📍 Arrived Home", "callback_data": "po:location:home"},
                 {"text": "🏃 Left Home", "callback_data": "po:location:away"}
             ]
             markup = _build_telegram_reply_markup(loc_buttons)
             await query.message.reply_text(msg, parse_mode="HTML", reply_markup=markup)
-            
+
     elif action == "task_complete":
         if len(parts) >= 3:
             task_id = parts[2]
@@ -1673,31 +1802,96 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
                     url = f"{TODOIST_BASE}/tasks/{task_id}/close"
                     resp = client.post(url, headers=_todoist_headers())
                     resp.raise_for_status()
-                
+
                 await query.answer(text="✅ Task completed!")
                 text = query.message.text or ""
                 new_text = text + "\n\n✅ <b>Task Completed!</b>"
                 await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
             except Exception as e:
                 await query.answer(text=f"❌ Failed to complete task: {e}")
-                
+
     elif action == "task_defer":
         if len(parts) >= 3:
             task_id = parts[2]
             try:
+                # Increment task deferral count in operator state
+                try:
+                    op_state = _operator_read_state()
+                    postpone_counts = op_state.setdefault("task_postpone_counts", {})
+                    postpone_counts[task_id] = postpone_counts.get(task_id, 0) + 1
+                    _operator_write_state(op_state)
+                except Exception:
+                    pass
+
                 with _http_client() as client:
                     url = f"{TODOIST_BASE}/tasks/{task_id}"
                     payload = {"due_string": "tomorrow morning"}
                     resp = client.post(url, headers=_todoist_headers(), json=payload)
                     resp.raise_for_status()
-                
+
                 await query.answer(text="📅 Task deferred to tomorrow morning!")
                 text = query.message.text or ""
                 new_text = text + "\n\n📅 <b>Task Deferred to tomorrow morning!</b>"
                 await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
             except Exception as e:
                 await query.answer(text=f"❌ Failed to defer task: {e}")
-                
+
+    elif action == "task_someday":
+        if len(parts) >= 3:
+            task_id = parts[2]
+            try:
+                with _http_client() as client:
+                    # Fetch projects map to find the ID of Someday/Maybe if exists
+                    projects_map = _get_projects_map()
+                    someday_project_id = None
+                    for p_id, p_name in projects_map.items():
+                        if "someday" in p_name.lower():
+                            someday_project_id = p_id
+                            break
+
+                    url = f"{TODOIST_BASE}/tasks/{task_id}"
+                    payload = {"due_string": ""}
+                    if someday_project_id:
+                        payload["project_id"] = someday_project_id
+
+                    resp = client.post(url, headers=_todoist_headers(), json=payload)
+                    resp.raise_for_status()
+
+                await query.answer(text="💤 Task parked guilt-free in Someday/Maybe!")
+                text = query.message.text or ""
+                new_text = text + "\n\n💤 <b>Task parked guilt-free in Someday/Maybe!</b>"
+                await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
+            except Exception as e:
+                await query.answer(text=f"❌ Failed to park task: {e}")
+
+    elif action == "task_shrink":
+        if len(parts) >= 3:
+            task_id = parts[2]
+            try:
+                with _http_client() as client:
+                    t_url = f"{TODOIST_BASE}/tasks/{task_id}"
+                    t_resp = client.get(t_url, headers=_todoist_headers())
+                    t_resp.raise_for_status()
+                    task_data = t_resp.json() or {}
+
+                    content = task_data.get("content", "").strip()
+                    if "[2-Min Micro Step]" not in content:
+                        content = f"[2-Min Micro Step] {content}"
+
+                    payload = {
+                        "content": content,
+                        "due_string": "today"
+                    }
+                    resp = client.post(t_url, headers=_todoist_headers(), json=payload)
+                    resp.raise_for_status()
+
+                await query.answer(text="⚡ Task shrunk to 2-Min Micro Step!")
+                text = query.message.text or ""
+                new_text = text + "\n\n⚡ <b>Task shrunk to 2-Min Micro Step!</b>"
+                await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
+            except Exception as e:
+                await query.answer(text=f"❌ Failed to shrink task: {e}")
+
     elif action == "task_delete":
         if len(parts) >= 3:
             task_id = parts[2]
@@ -1706,20 +1900,20 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
                     url = f"{TODOIST_BASE}/tasks/{task_id}"
                     resp = client.delete(url, headers=_todoist_headers())
                     resp.raise_for_status()
-                
+
                 await query.answer(text="🗑️ Task archived/deleted!")
                 text = query.message.text or ""
                 new_text = text + "\n\n🗑️ <b>Task Archived/Deleted!</b>"
                 await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
             except Exception as e:
                 await query.answer(text=f"❌ Failed to delete task: {e}")
-                
+
     elif action == "show_list":
         await query.answer()
         if len(parts) >= 3:
             list_type = parts[2]
             proj_id = parts[3] if len(parts) >= 4 and parts[3] != "none" else None
-            
+
             tasks = []
             title = ""
             try:
@@ -1771,7 +1965,7 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
                 elif list_type == "deep_work":
                     tasks = _focus_guard_read_todoist_tasks(filter="@deep_work | deep_work")
                     title = "⚡ <b>Deep Work Tasks</b>"
-                
+
                 if not tasks:
                     msg = f"{title}\n\n✅ <b>No active tasks in this view!</b>"
                     await query.message.reply_text(msg, parse_mode="HTML")
@@ -1786,12 +1980,53 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
                         if t_id:
                             buttons.append({"text": f"✅ {idx}", "callback_data": f"po:task_complete:{t_id}"})
                             buttons.append({"text": f"📅 {idx}", "callback_data": f"po:task_defer:{t_id}"})
-                    
+
                     markup = _build_telegram_reply_markup(buttons)
                     await query.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=markup)
             except Exception as e:
                 await query.answer(text=f"❌ Failed to fetch list: {e}")
-                
+
+    elif action == "review_anchors":
+        await query.answer()
+        try:
+            all_tasks = _focus_guard_read_todoist_tasks()
+            family_anchors = []
+            fitness_anchors = []
+            for t in all_tasks:
+                role = _classify_task_role(t)
+                if role == "family_anchor":
+                    family_anchors.append(t)
+                elif role == "fitness_anchor" or "fitness_anchor" in [l.lower() for l in t.get("labels") or []]:
+                    fitness_anchors.append(t)
+
+            lines = ["⚓ <b>Your Sacred Protected Anchors:</b>", ""]
+            if not family_anchors and not fitness_anchors:
+                lines.append("No active family or fitness anchors scheduled!")
+            else:
+                if family_anchors:
+                    lines.append("<b>🌸 Family & Life Anchors:</b>")
+                    for t in family_anchors:
+                        content = _escape_html(t.get("content", ""))
+                        t_id = t.get("id")
+                        if t_id:
+                            lines.append(f"  • <a href=\"https://app.todoist.com/app/task/{t_id}\">{content}</a>")
+                        else:
+                            lines.append(f"  • {content}")
+                    lines.append("")
+                if fitness_anchors:
+                    lines.append("<b>💪 Fitness & Gym Anchors:</b>")
+                    for t in fitness_anchors:
+                        content = _escape_html(t.get("content", ""))
+                        t_id = t.get("id")
+                        if t_id:
+                            lines.append(f"  • <a href=\"https://app.todoist.com/app/task/{t_id}\">{content}</a>")
+                        else:
+                            lines.append(f"  • {content}")
+
+            await query.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            await query.message.reply_text(f"❌ Failed to fetch anchors: {e}", parse_mode="HTML")
+
     elif action == "nudge_mute":
         if len(parts) >= 3:
             # Mute for 1 hour (3600 sec)
@@ -1803,7 +2038,7 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
             _operator_write_state(operator_state)
             await query.answer(text="🔕 Nudges muted for 1 hour!")
             await query.message.reply_text("🔕 <b>Nudges muted for 1 hour.</b>", parse_mode="HTML")
-            
+
     elif action == "sprint":
         if len(parts) >= 3 and parts[2] == "start":
             await query.answer(text="⚡ 5-minute sprint started! Focus!")
@@ -1812,7 +2047,7 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
             operator_state["active_sprint"] = {"started_at": now_ts, "duration": 300}
             _operator_write_state(operator_state)
             await query.message.reply_text("⚡ <b>5-minute sprint started! Go go go!</b>", parse_mode="HTML")
-            
+
     elif action == "defer_all_today":
         try:
             cleanup_res = _run_auto_cleanup_routines()
@@ -1826,7 +2061,156 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
             await query.message.reply_text(msg, parse_mode="HTML")
         except Exception as e:
             await query.answer(text=f"❌ Failed to defer: {e}")
-            
+
+    elif action == "briefing":
+        if len(parts) >= 3:
+            sub = parts[2]
+            if sub == "triage":
+                await query.answer()
+                all_tasks = _focus_guard_read_todoist_tasks()
+                from datetime import date
+                tz = _runtime_local_tz()
+                today_date = datetime.now(tz).date()
+                overdue = []
+                for t in all_tasks:
+                    due_info = t.get("due") or {}
+                    due_date_str = due_info.get("date")
+                    if due_date_str:
+                        try:
+                            date_part = due_date_str.split("T")[0]
+                            task_due_date = date.fromisoformat(date_part)
+                            if task_due_date <= today_date:
+                                overdue.append(t)
+                        except Exception:
+                            pass
+                if not overdue:
+                    await query.message.reply_text("<b>🧹 Triage Complete</b>\nYou have no overdue tasks to triage! Sleep well. ✨", parse_mode="HTML")
+                else:
+                    first = overdue[0]
+                    t_id = first.get("id")
+                    escaped_content = _escape_html(first.get("content", "").strip())
+                    msg = f"<b>🧹 Overdue Triage (1 of {len(overdue)})</b>\n\nTask: <b>{escaped_content}</b>"
+                    buttons = [
+                        {"text": "✅ Complete", "callback_data": f"po:task_complete:{t_id}"},
+                        {"text": "📅 Defer (Tomorrow)", "callback_data": f"po:task_defer:{t_id}"},
+                        {"text": "🗑️ Delete", "callback_data": f"po:task_delete:{t_id}"}
+                    ]
+                    markup = _build_telegram_reply_markup(buttons)
+                    await query.message.reply_text(msg, parse_mode="HTML", reply_markup=markup)
+
+            elif sub == "quiet":
+                await query.answer(text="Quiet mode activated.")
+                await query.edit_message_text(
+                    "<b>🌙 Quiet Mode Active</b>\n\nTask previews skipped for tonight. Rest well and protect your nervous system! 💤",
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
+
+            elif sub == "top3":
+                await query.answer()
+                all_tasks = _focus_guard_read_todoist_tasks()
+                from datetime import date
+                tz = _runtime_local_tz()
+                today_date = datetime.now(tz).date()
+                tomorrow_date = today_date + timedelta(days=1)
+                tomorrow_tasks = []
+                for t in all_tasks:
+                    due_info = t.get("due") or {}
+                    due_date_str = due_info.get("date")
+                    if due_date_str:
+                        try:
+                            date_part = due_date_str.split("T")[0]
+                            task_due_date = date.fromisoformat(date_part)
+                            if task_due_date == tomorrow_date:
+                                tomorrow_tasks.append(t)
+                        except Exception:
+                            pass
+
+                focus_tasks = [t for t in tomorrow_tasks if _classify_task_role(t) == "focus"]
+                if not focus_tasks:
+                    focus_tasks = tomorrow_tasks[:3]
+                else:
+                    focus_tasks = focus_tasks[:3]
+
+                lines = [
+                    "<b>📅 Tomorrow's Top 3 Priorities:</b>",
+                    "Here are your protected focus priorities for tomorrow:",
+                    ""
+                ]
+                for t in focus_tasks:
+                    t_id = t.get("id")
+                    escaped_content = _escape_html(t.get("content", "").strip())
+                    if t_id:
+                        lines.append(f"  • <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a>")
+                    else:
+                        lines.append(f"  • {escaped_content}")
+                lines.append("\n<i>Nothing else needs sorting tonight. Enjoy a restful evening! 🌟</i>")
+                await query.edit_message_text("\n".join(lines), parse_mode="HTML", reply_markup=None, disable_web_page_preview=True)
+            else:
+                await query.answer()
+        else:
+            await query.answer()
+
+    elif action == "stuck":
+        if len(parts) >= 3:
+            sub = parts[2]
+            if len(parts) >= 4:
+                task_id = parts[3]
+                try:
+                    if sub == "shrink":
+                        all_tasks = _focus_guard_read_todoist_tasks()
+                        task_title = "stuck task"
+                        for t in all_tasks:
+                            if t.get("id") == task_id:
+                                task_title = t.get("content", "stuck task")
+                                break
+                        await query.answer()
+                        msg = (
+                            f"<b>⚡ Stuck Task Intervention</b>\n\n"
+                            f"Let's break down <b>\"{_escape_html(task_title)}\"</b> into a smaller 2-minute step.\n\n"
+                            f"<i>Tomorrow morning: write down one tiny, concrete next action (like 'Open document' or 'Draft email introduction') and do strictly that first!</i>"
+                        )
+                        await query.message.reply_text(msg, parse_mode="HTML")
+
+                    elif sub == "someday":
+                        all_tasks = _focus_guard_read_todoist_tasks()
+                        target_task = None
+                        for t in all_tasks:
+                            if t.get("id") == task_id:
+                                target_task = t
+                                break
+
+                        if target_task:
+                            current_labels = target_task.get("labels") or []
+                            new_labels = list(set(current_labels + ["someday"]))
+                            with _http_client() as client:
+                                url = f"{TODOIST_BASE}/tasks/{task_id}"
+                                payload = {"due_string": "no date", "labels": new_labels}
+                                resp = client.post(url, headers=_todoist_headers(), json=payload)
+                                resp.raise_for_status()
+
+                        await query.answer(text="Task moved to Someday/Maybe!")
+                        text = query.message.text or ""
+                        new_text = text + "\n\n💤 <b>Task moved to Someday/Maybe (due date removed, labeled @someday)</b>"
+                        await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
+
+                    elif sub == "delete":
+                        with _http_client() as client:
+                            url = f"{TODOIST_BASE}/tasks/{task_id}"
+                            resp = client.delete(url, headers=_todoist_headers())
+                            resp.raise_for_status()
+
+                        await query.answer(text="Task deleted!")
+                        text = query.message.text or ""
+                        new_text = text + "\n\n🗑️ <b>Task Deleted!</b>"
+                        await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
+                except Exception as e:
+                    await query.answer(text=f"❌ Action failed: {e}")
+            else:
+                await query.answer()
+        else:
+            await query.answer()
+
     else:
         await query.answer()
 
@@ -2177,40 +2561,6 @@ def _runtime_provider_chain(path: Path = HERMES_CONFIG_PATH) -> Dict[str, Any]:
         },
         "plugins_enabled": enabled_plugins if isinstance(enabled_plugins, list) else [],
     }
-
-
-def _runtime_context_budget_audit(args: Dict[str, Any]) -> Dict[str, Any]:
-    from plugins.personal_ops.context_budget import audit_context_budget
-
-    repo_path = Path(args.get("repo_path") or _runtime_default_repo_path())
-    return audit_context_budget(
-        hermes_home=HERMES_HOME,
-        repo_path=repo_path,
-        write_event=bool(args.get("write_event", True)),
-    )
-
-
-def _runtime_profile_prune_plan(args: Dict[str, Any]) -> Dict[str, Any]:
-    from plugins.personal_ops.context_budget import prune_profile_recommendations
-
-    data = _read_yaml(HERMES_CONFIG_PATH, {}) or {}
-    keep_plugins = args.get("keep_plugins")
-    if isinstance(keep_plugins, str):
-        keep_plugins = [item.strip() for item in keep_plugins.split(",") if item.strip()]
-    if not isinstance(keep_plugins, list):
-        keep_plugins = None
-    return prune_profile_recommendations(config_data=data, keep_plugins=keep_plugins)
-
-
-def _runtime_memory_tier(args: Dict[str, Any]) -> Dict[str, Any]:
-    from plugins.personal_ops.context_budget import classify_memory_destination
-
-    content = str(args.get("content") or args.get("text") or "").strip()
-    memory_type = str(args.get("memory_type") or args.get("type") or "note").strip()
-    if not content:
-        raise ValueError("content is required")
-    result = classify_memory_destination(content, memory_type=memory_type)
-    return {"success": True, "action": "memory_tier", "content": content, "memory_type": memory_type, **result}
 
 
 def _runtime_isolation_profile_plan(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -3027,7 +3377,7 @@ def _runtime_source_friendly(source: str) -> str:
 def _runtime_task_link(title: str, task_id: Optional[str]) -> str:
     escaped = _escape_html(title)
     if task_id:
-        return f'<b><a href="https://todoist.com/showTask?id={task_id}">{escaped}</a></b>'
+        return f'<b><a href="https://app.todoist.com/app/task/{task_id}">{escaped}</a></b>'
     return f'"{escaped}"'
 
 
@@ -3550,7 +3900,7 @@ def _runtime_handle_voice_capture(args: Dict[str, Any]) -> Dict[str, Any]:
     legacy_kind = kind_map.get(primary_intent, "note_capture")
     legacy_reason = segments[0].get("reason", "") if segments else ""
     classification = {"kind": legacy_kind, "reason": legacy_reason}
-    
+
     # Route mood updates
     mood = _mood_router_route(args, now=datetime.now(timezone.utc))
 
@@ -3575,18 +3925,18 @@ def _runtime_handle_activitywatch_heartbeat(args: Dict[str, Any]) -> Dict[str, A
     confidence = float(signal.get("confidence") or 0.0)
     label = str(signal.get("label") or "ActivityWatch heartbeat").strip()
     active = bool(signal.get("active"))
-    
+
     # Read current location from presence state
     state = _read_json(PRESENCE_STATE_PATH, {})
     current_location = state.get("location", "").strip().lower()
-    
+
     if active:
         if current_location != "desk":
             _handle_location_update({"location": "desk", "source": "activitywatch-forwarder"})
     else:
         if current_location == "desk":
             _handle_location_update({"location": "home", "source": "activitywatch-forwarder"})
-            
+
     return {
         "handled": True,
         "event_type": "activitywatch_heartbeat",
@@ -3601,13 +3951,103 @@ def _runtime_handle_activitywatch_heartbeat(args: Dict[str, Any]) -> Dict[str, A
     }
 
 
+def _runtime_handle_gym_event(args: Dict[str, Any]) -> Dict[str, Any]:
+    event_type = str(args.get("event_type") or "").strip().lower()
+    if not event_type:
+        event_type = "gym.arrived"
+    event = event_type.split(".", 1)[-1]
+    note = str(args.get("note") or args.get("message") or "").strip()
+    source = str(args.get("source") or "gym-webhook").strip()
+    when_raw = args.get("when")
+    when: Optional[datetime] = None
+    if isinstance(when_raw, str) and when_raw.strip():
+        try:
+            when = datetime.fromisoformat(when_raw.replace("Z", "+00:00"))
+        except Exception:
+            when = None
+
+    if event == "arrived" and _gym_record_arrival is not None:
+        message = _gym_record_arrival(source=source, note=note, when=when)
+        try:
+            _safe_send_telegram_message(message, force=True)
+        except Exception:
+            pass
+    elif event == "left" and _gym_record_departure is not None:
+        message = _gym_record_departure(source=source, note=note, when=when)
+        if _gym_workout_task_for_day is not None:
+            task = _gym_workout_task_for_day(when)
+            if task:
+                try:
+                    name, url = task
+                    task_id = url
+                    if "id=" in url:
+                        task_id = url.split("id=")[-1]
+                    elif "/" in url:
+                        task_id = url.rstrip("/").split("/")[-1]
+                    close_res = _execute_todoist({"action": "close_task", "task_id": task_id})
+                    if close_res.get("success"):
+                        message += f"\nAutomatically completed Todoist task: {name}."
+                except Exception as e:
+                    message += f"\n(Failed to auto-complete Todoist task: {e})"
+        try:
+            _safe_send_telegram_message(message, force=True)
+        except Exception:
+            pass
+    elif event == "report" and _gym_monthly_report is not None:
+        year = args.get("year")
+        month = args.get("month")
+        try:
+            message = _gym_monthly_report(
+                year=int(year) if year is not None and str(year).strip() else None,
+                month=int(month) if month is not None and str(month).strip() else None,
+            )
+        except Exception:
+            message = _gym_monthly_report()
+    else:
+        raise ValueError(f"Unsupported gym event: {event_type}")
+
+    payload = {
+        "gym_event": event,
+        "source": source,
+        "note": note,
+    }
+    if _gym_workout_task_for_day is not None:
+        task = _gym_workout_task_for_day(when)
+        if task:
+            name, url = task
+            task_id = url.split("id=")[-1] if "id=" in url else url
+            payload["workout_task"] = {
+                "name": name,
+                "url": url,
+                "app_url": f"todoist://task?id={task_id}"
+            }
+    if event == "arrived":
+        payload["location"] = "gym"
+    elif event == "left":
+        payload["location"] = "away"
+    return {
+        "handled": True,
+        "event_type": event_type,
+        "summary": message.splitlines()[0] if message else f"Logged gym {event}.",
+        "message": message,
+        "presence_signal": {
+            "confidence": 1.0,
+            "label": f"Gym {event}",
+            "active": event == "arrived",
+            "active_category": "gym",
+            "location": payload.get("location", "gym" if event == "arrived" else "away"),
+        },
+        "payload": payload,
+    }
+
+
 def _update_operator_state_from_event(event_type: str, source: str, payload: Dict[str, Any], now_dt: datetime) -> None:
     now_ts = int(now_dt.timestamp())
     presence_state = _read_json(PRESENCE_STATE_PATH, {})
     if not isinstance(presence_state, dict):
         presence_state = {}
     operator_state = _operator_read_state()
-    
+
     # Track sensor heartbeats
     heartbeats = operator_state.setdefault("last_sensor_heartbeats", {})
     heartbeats[source] = now_ts
@@ -3689,24 +4129,24 @@ def _update_operator_state_from_event(event_type: str, source: str, payload: Dic
 def _is_nudge_allowed_and_wise(now_dt: datetime, operator_state: Dict[str, Any]) -> tuple[bool, str]:
     now_hour = now_dt.hour
     now_ts = int(now_dt.timestamp())
-    
+
     if not _telegram_messages_allowed_now(now_hour):
         return False, "outside_allowed_hours"
-        
+
     day_phase = operator_state.get("day_phase")
     if day_phase == "quiet_hours":
         return False, "sleep_or_quiet_hours"
 
     nudge_state = operator_state.setdefault("nudge_fatigue", {})
-    
+
     # Check mute_until lock
     mute_until = int(nudge_state.get("mute_until_ts") or 0)
     if mute_until > 0 and now_ts < mute_until:
         return False, "muted"
-        
+
     last_nudge = int(nudge_state.get("last_nudge_ts") or 0)
     cooldown = int(nudge_state.get("cooldown_duration") or 3600)
-    
+
     if last_nudge > 0 and (now_ts - last_nudge < cooldown):
         return False, "cooldown_active"
 
@@ -3724,19 +4164,19 @@ def _record_nudge_sent(now_dt: datetime, cooldown: int = 3600) -> None:
 def _build_distraction_nudge_message(duration_sec: int, category: str, salvage: Dict[str, Any]) -> str:
     dur_min = duration_sec // 60
     cat_name = category.replace("distraction_", "").capitalize()
-    
+
     lines = [
         "<b>Focus check</b>",
         f"I received a desktop signal that looks like {cat_name.lower()} for about {dur_min} minutes. I am treating that as context, not proof of intent or availability.",
         ""
     ]
-    
+
     if salvage.get("expired"):
         lines.append("<b>Expired as written:</b>")
         for t in salvage["expired"][:3]:
             lines.append(f"• <s>{_escape_html(t)}</s>")
         lines.append("")
-        
+
     if salvage.get("closed"):
         lines.append("<b>Closed by time/window:</b>")
         for t in salvage["closed"][:3]:
@@ -3748,11 +4188,11 @@ def _build_distraction_nudge_message(duration_sec: int, category: str, salvage: 
         for t in salvage["still_useful"][:3]:
             lines.append(f"• {_escape_html(t)}")
         lines.append("")
-        
+
     best_move = salvage.get("still_useful")[0] if salvage.get("still_useful") else "Draft tomorrow's items"
     lines.append("<b>Best recovery:</b>")
     lines.append(f"Spend 5 minutes on: {_escape_html(str(best_move))}. If that is wrong, mute or defer instead.")
-    
+
     return "\n".join(lines)
 
 
@@ -3770,29 +4210,157 @@ def _handle_distraction_event(event_type: str, payload: Dict[str, Any], now_dt: 
 
     analysis = _common_sense_analyze_tasks(tasks, now=now_dt)
     salvage = analysis.get("late_day_salvage") or {}
-    
+
     duration_sec = int(payload.get("duration_sec") or 0)
     category = str(payload.get("category") or "unknown")
-    
+
     msg = _build_distraction_nudge_message(duration_sec, category, salvage)
-    
+
     buttons = [
         {"text": "⚡ 5-Min Sprint", "callback_data": "po:sprint:start"},
         {"text": "☕ Take Break", "callback_data": "po:nudge_mute:1h"},
         {"text": "🔄 Defer Remaining", "callback_data": "po:defer_all_today"}
     ]
-    
+
     _safe_send_telegram_message(msg, parse_mode="HTML", buttons=buttons)
     _record_nudge_sent(now_dt, cooldown=3600)
 
     return {"handled": True, "event_type": event_type, "nudge_sent": True, "message": msg, "summary": f"Sent distraction nudge for {category}."}
 
 
+def _classify_task_role(task: Dict[str, Any]) -> str:
+    content = str(task.get("content") or "").lower()
+    labels = [str(l).lower() for l in task.get("labels") or []]
+    due_info = task.get("due") or {}
+    is_recurring = bool(due_info.get("is_recurring"))
+
+    # 1. Check explicit classification labels first
+    if "family_anchor" in labels:
+        return "family_anchor"
+    if "fitness_anchor" in labels:
+        return "fitness_anchor"
+    if "routine" in labels:
+        return "routine"
+    if "reference" in labels:
+        return "reference"
+    if "checklist_item" in labels:
+        return "checklist_item"
+    if "task_debt" in labels:
+        return "task_debt"
+    if "exclude_workload" in labels:
+        return "exclude_workload"
+    if "hermes_hidden" in labels:
+        return "hermes_hidden"
+
+    # 2. Fallbacks
+    # Family & Life Anchors
+    family_words = {"family", "son", "wife", "outing", "playtime", "parent"}
+    if any(w in content for w in family_words) or "family_anchor" in labels:
+        return "family_anchor"
+
+    # Fitness / Gym / Workout
+    fitness_words = {"workout", "gym", "fitness", "upper", "lower", "recovery day", "cardio", "nutrition"}
+    if any(w in content for w in fitness_words) or "fitness_anchor" in labels or task.get("project_id") == "6ghFPf6XX9Hv3h6p":
+        return "fitness_anchor"
+
+    # Routines & Habits
+    routine_words = {"routine", "daily", "habit", "checklist", "shut down", "morning launch", "reset"}
+    routine_labels = {"routine", "daily", "habit", "health"}
+    if is_recurring or any(w in content for w in routine_words) or any(l in routine_labels for l in labels):
+        return "routine"
+
+    # Focus Work
+    priority = int(task.get("priority") or 1)
+    if priority >= 3:
+        return "focus"
+
+    return "admin"
+
+
+def _classify_task_type(task: Dict[str, Any]) -> str:
+    return _classify_task_role(task)
+
+
+def _classify_task_decision_load(task: Dict[str, Any], is_debt: bool = False) -> str:
+    if is_debt:
+        return "debt"
+
+    role = _classify_task_role(task)
+    if role in ("family_anchor", "routine"):
+        return "routine"
+
+    content = str(task.get("content") or "").lower()
+    labels = [str(l).lower() for l in task.get("labels") or []]
+
+    decision_words = {
+        "plan", "choice", "choose", "communication", "review", "write", "decide",
+        "call", "email", "meeting", "discuss", "strategy", "someday", "maybe",
+        "triage", "cleanup", "clean up"
+    }
+    has_decision_word = any(w in content for w in decision_words)
+    has_decision_label = any(l in ("deep_work", "focus", "decision") for l in labels)
+    priority = int(task.get("priority") or 1)
+
+    if role == "focus" or priority >= 3 or has_decision_word or has_decision_label:
+        return "decision_heavy"
+
+    return "execution_only"
+
+
+def _operator_evaluate_yesterday_predictions(operator_state: Dict[str, Any], current_tasks: List[Dict[str, Any]]) -> None:
+    briefing_predictions = operator_state.setdefault("briefing_predictions", {})
+    current_ids = {t.get("id") for t in current_tasks if t.get("id")}
+
+    analytics = operator_state.setdefault("behavioral_analytics", {
+        "completions_count": 0,
+        "ignores_count": 0,
+        "history": []
+    })
+
+    recent_completions = []
+    try:
+        recent_completions = _get_recent_completions()
+    except Exception:
+        pass
+    completed_task_ids = {str(c.get("task_id")) for c in recent_completions if c.get("task_id")}
+
+    today_str = datetime.now(_runtime_local_tz()).date().isoformat()
+
+    for date_str, pred in list(briefing_predictions.items()):
+        if date_str == today_str or pred.get("completed"):
+            continue
+
+        predicted_ids = pred.get("predicted_top_tasks") or []
+        if not predicted_ids:
+            pred["completed"] = True
+            continue
+
+        completed_ids = []
+        ignored_ids = []
+        for pid in predicted_ids:
+            if pid in completed_task_ids or pid not in current_ids:
+                completed_ids.append(pid)
+            else:
+                ignored_ids.append(pid)
+
+        pred["completed"] = True
+        pred["completed_tasks"] = completed_ids
+        pred["ignored_tasks"] = ignored_ids
+
+        analytics["completions_count"] += len(completed_ids)
+        analytics["ignores_count"] += len(ignored_ids)
+        analytics["history"].append({
+            "date": date_str,
+            "completed_count": len(completed_ids),
+            "ignored_count": len(ignored_ids)
+        })
+
+
 def _run_scheduler_checks(now_dt: datetime) -> None:
     now_ts = int(now_dt.timestamp())
     operator_state = _operator_read_state()
     state_changed = False
-    
+
     # 1. Active Sprint check
     sprint = operator_state.get("active_sprint")
     if sprint:
@@ -3809,8 +4377,11 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
             _safe_send_telegram_message(msg, parse_mode="HTML", buttons=buttons)
 
     # 2. Daily boundary checks / transitions
-    last_phase = operator_state.get("day_phase")
-    local_hour = now_dt.astimezone(_runtime_local_tz()).hour
+    tz = _runtime_local_tz()
+    local_now = now_dt.astimezone(tz)
+    local_hour = local_now.hour
+    local_min = local_now.minute
+
     current_phase = "quiet_hours"
     if 9 <= local_hour < 18:
         current_phase = "work_window"
@@ -3819,12 +4390,75 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
     else:
         current_phase = "quiet_hours"
 
+    last_phase = operator_state.get("day_phase")
     if last_phase != current_phase:
         operator_state["day_phase"] = current_phase
         state_changed = True
         if last_phase is not None:
             if current_phase == "work_window":
-                _safe_send_telegram_message("<b>☀️ Work Window Started</b>\nLet's get focus mode going. Open your first task to start.", parse_mode="HTML")
+                # Morning Repair Loop (7-Minute Clean)
+                had_debt = operator_state.get("last_briefing_had_debt")
+                if had_debt:
+                    operator_state["last_briefing_had_debt"] = False
+
+                    try:
+                        all_tasks = _focus_guard_read_todoist_tasks()
+                        from datetime import date
+                        today_date = local_now.date()
+
+                        overdue = []
+                        for t in all_tasks:
+                            # Skip reference, hidden, duplicate, and checklist items from workload calculation
+                            lbls = [str(l).lower() for l in t.get("labels") or []]
+                            if any(l in {"exclude_workload", "reference", "hermes_hidden", "checklist_item", "duplicate"} for l in lbls):
+                                continue
+
+                            due_info = t.get("due") or {}
+                            due_date_str = due_info.get("date")
+                            if due_date_str:
+                                try:
+                                    date_part = due_date_str.split("T")[0]
+                                    task_due_date = date.fromisoformat(date_part)
+                                    if task_due_date < today_date:
+                                        overdue.append(t)
+                                except Exception:
+                                    pass
+
+                        shown_counts = operator_state.get("shown_task_counts", {})
+                        critical_overdue = []
+                        for t in overdue:
+                            priority = int(t.get("priority") or 1)
+                            t_id = t.get("id")
+                            is_stuck = t_id and shown_counts.get(t_id, 0) >= 5
+                            if priority >= 3 or is_stuck:
+                                critical_overdue.append(t)
+
+                        if not critical_overdue:
+                            critical_overdue = overdue
+
+                        lines = [
+                            "<b>☀️ Morning Repair Loop (7-Minute Clean)</b>",
+                            "Before starting work, let’s spend 7 minutes cleaning task debt. I’ll show only overdue items that are either high-priority, repeated, or stuck.",
+                            ""
+                        ]
+
+                        to_show = critical_overdue[:3]
+                        for t in to_show:
+                            escaped_content = _escape_html(t.get("content", "").strip())
+                            lines.append(f"  • <b>{escaped_content}</b>")
+
+                        lines.append("\n<i>Tap one of the quick actions below to process these, or reply to clear the deck!</i>")
+
+                        buttons = [
+                            {"text": "🧹 Triage Backlog", "callback_data": "po:briefing:triage"},
+                            {"text": "🔄 Defer All Today", "callback_data": "po:defer_all_today"}
+                        ]
+                        _safe_send_telegram_message("\n".join(lines), parse_mode="HTML", buttons=buttons)
+                    except Exception:
+                        _safe_send_telegram_message("<b>☀️ Work Window Started</b>\nLet's get focus mode going. Open your first task to start.", parse_mode="HTML")
+                else:
+                    _safe_send_telegram_message("<b>☀️ Work Window Started</b>\nLet's get focus mode going. Open your first task to start.", parse_mode="HTML")
+
             elif current_phase == "quiet_hours":
                 cleanup_res = _run_auto_cleanup_routines()
                 logs = cleanup_res.get("logs", [])
@@ -3832,6 +4466,462 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
                 if logs:
                     msg += "\n".join([f"• {_escape_html(l)}" for l in logs])
                 _safe_send_telegram_message(msg, parse_mode="HTML")
+
+    # 3. Evening Briefing check (9:45 PM tomorrow preview)
+    if local_hour == 21 and local_min >= 45:
+        today_str = local_now.date().isoformat()
+        last_brief = operator_state.get("last_evening_briefing_date")
+        if last_brief != today_str:
+            # Mark as sent immediately to prevent concurrent triggers
+            operator_state["last_evening_briefing_date"] = today_str
+            state_changed = True
+
+            try:
+                from datetime import date
+                # Fetch all tasks programmatically to separate tomorrow, missed today, and overdue
+                all_tasks = _focus_guard_read_todoist_tasks()
+
+                # Rule 1: Prediction vs reality loop - Evaluate yesterday's predictions
+                _operator_evaluate_yesterday_predictions(operator_state, all_tasks)
+
+                today_date = local_now.date()
+                tomorrow_date = today_date + timedelta(days=1)
+
+                tomorrow_tasks = []
+                overdue_tasks = []
+                missed_today_tasks = []
+
+                for t in all_tasks:
+                    # Skip reference, hidden, duplicate, and checklist items from workload calculation
+                    lbls = [str(l).lower() for l in t.get("labels") or []]
+                    if any(l in {"exclude_workload", "reference", "hermes_hidden", "checklist_item", "duplicate"} for l in lbls):
+                        continue
+
+                    due_info = t.get("due") or {}
+                    due_date_str = due_info.get("date")
+                    if not due_date_str:
+                        continue
+                    try:
+                        date_part = due_date_str.split("T")[0]
+                        task_due_date = date.fromisoformat(date_part)
+                    except Exception:
+                        continue
+
+                    if task_due_date == tomorrow_date:
+                        tomorrow_tasks.append(t)
+                    elif task_due_date == today_date:
+                        missed_today_tasks.append(t)
+                    elif task_due_date < today_date:
+                        overdue_tasks.append(t)
+
+                # Rule 3 & 4: Stale-task decay and quarantining
+                active_overdue_tasks = []
+                stale_backlog_tasks = []
+                for t in overdue_tasks:
+                    due_info = t.get("due") or {}
+                    due_date_str = due_info.get("date")
+                    is_stale = False
+                    if due_date_str:
+                        try:
+                            date_part = due_date_str.split("T")[0]
+                            task_due_date = date.fromisoformat(date_part)
+                            overdue_days = (today_date - task_due_date).days
+                            priority = int(t.get("priority") or 1)
+                            if overdue_days >= 7 and priority < 4:
+                                is_stale = True
+                        except Exception:
+                            pass
+                    if is_stale:
+                        stale_backlog_tasks.append(t)
+                    else:
+                        active_overdue_tasks.append(t)
+
+                # Increment shown counts for all tasks evaluated (Rule 2: Task survivorship)
+                shown_counts = operator_state.setdefault("shown_task_counts", {})
+                for t in tomorrow_tasks + active_overdue_tasks:
+                    t_id = t.get("id")
+                    if t_id:
+                        shown_counts[t_id] = shown_counts.get(t_id, 0) + 1
+
+                # Separate stuck tasks
+                stuck_tasks = []
+                unstuck_tomorrow_tasks = []
+                for t in tomorrow_tasks:
+                    t_id = t.get("id")
+                    if t_id and shown_counts.get(t_id, 0) >= 5:
+                        stuck_tasks.append(t)
+                    else:
+                        unstuck_tomorrow_tasks.append(t)
+
+                unstuck_overdue_tasks = []
+                for t in active_overdue_tasks:
+                    t_id = t.get("id")
+                    if t_id and shown_counts.get(t_id, 0) >= 5:
+                        stuck_tasks.append(t)
+                    else:
+                        unstuck_overdue_tasks.append(t)
+
+                display_tomorrow_count = len(tomorrow_tasks)
+                display_debt_count = len(unstuck_overdue_tasks) + len(missed_today_tasks)
+                stale_count = len(stale_backlog_tasks)
+
+                # Save whether this briefing had heavy debt for morning repair loop check
+                operator_state["last_briefing_had_debt"] = (display_debt_count >= 10)
+
+                # Rule 4: Protective Omission policy is explicit
+                evening_briefing_should_not_show_full_backlog = True
+
+                # Classify tomorrow's tasks for scoring decision load (Rule 2)
+                family_anchors = []
+                fitness_anchors = []
+                focus_tasks = []
+                routines = []
+                admins = []
+
+                decision_heavy_tasks = []
+                execution_only_tasks = []
+
+                for t in unstuck_tomorrow_tasks:
+                    role = _classify_task_role(t)
+                    if role == "family_anchor":
+                        family_anchors.append(t)
+                    elif role == "fitness_anchor" or "fitness_anchor" in [l.lower() for l in t.get("labels") or []]:
+                        fitness_anchors.append(t)
+                    elif role == "routine":
+                        routines.append(t)
+                    else:
+                        load_cat = _classify_task_decision_load(t, is_debt=False)
+                        if load_cat == "decision_heavy":
+                            decision_heavy_tasks.append(t)
+                        else:
+                            execution_only_tasks.append(t)
+
+                        if role == "focus":
+                            focus_tasks.append(t)
+                        else:
+                            admins.append(t)
+
+                # Filter tomorrow workload tasks: exclude family/fitness anchors
+                tomorrow_workload_tasks = focus_tasks + admins + routines
+                display_tomorrow_count = len(tomorrow_workload_tasks)
+                display_debt_count = len(unstuck_overdue_tasks) + len(missed_today_tasks)
+                stale_count = len(stale_backlog_tasks)
+
+                # Save whether this briefing had heavy debt for morning repair loop check
+                operator_state["last_briefing_had_debt"] = (display_debt_count >= 10)
+
+                # Rule 4: Protective Omission policy is explicit
+                evening_briefing_should_not_show_full_backlog = True
+
+                triage_mode = (display_debt_count >= 10)
+
+                # Briefing Memory Introductory copy (Rule 7)
+                last_mode = operator_state.get("last_evening_briefing_mode")
+                operator_state["last_evening_briefing_mode"] = "task_debt_triage" if triage_mode else "standard"
+
+                lines = []
+
+                # Done Enough celebratory header (Rule 8)
+                completed_today = 0
+                try:
+                    recent_comps = _get_recent_completions()
+                    for c in recent_comps:
+                        completed_at_str = c.get("completed_at")
+                        if completed_at_str:
+                            comp_date = datetime.fromisoformat(completed_at_str.replace("Z", "+00:00")).astimezone(tz).date()
+                            if comp_date == today_date:
+                                completed_today += 1
+                except Exception:
+                    pass
+
+                if completed_today >= 3:
+                    lines.append("<b>🎉 You moved the important pieces today. Tomorrow has some cleanup, but nothing needs solving tonight.</b>\n")
+
+                if triage_mode:
+                    lines.append("<b>📅 Tomorrow's Preview: Sleep-Safe Triage</b>")
+                    if last_mode == "task_debt_triage":
+                        lines.append("<i>Same situation as last night: tomorrow itself is manageable, but the overdue queue still needs a cleanup pass.</i>\n")
+                    else:
+                        lines.append(f"Tomorrow's scheduled workload is manageable ({display_tomorrow_count} scheduled workload item{'s' if display_tomorrow_count != 1 else ''}).\n")
+                else:
+                    lines.append("<b>📅 Tomorrow's Todoist Preview</b>")
+
+                # Workload / Decision Load statement (Rule 2)
+                lines.append(f"Tomorrow has {display_tomorrow_count} scheduled workload item{'s' if display_tomorrow_count != 1 else ''}, but only {len(decision_heavy_tasks)} require{'s' if len(decision_heavy_tasks) == 1 else ''} real decisions.")
+                lines.append("")
+
+                # Carryover debt quarantine
+                if display_debt_count > 0:
+                    lines.append(f"There is also a backlog of {display_debt_count} overdue or carryover item{'s' if display_debt_count != 1 else ''} in quarantine. None of these need to be decided tonight—they need cleanup, not panic.")
+                    lines.append("")
+
+                # Rule 3: Stale task decay message
+                if stale_count > 0:
+                    lines.append(f"<i>{stale_count} overdue item{'s' if stale_count != 1 else ''} look stale rather than urgent. I’ll keep them out of tomorrow’s workload unless you promote them.</i>")
+                    lines.append("")
+
+                # Rule 4 & 5: Protective omission limit - Hard max of 3 focus items shown
+                to_show = (focus_tasks + admins)[:3]
+                if to_show:
+                    lines.append("<b>⭐ Focus Work to Protect:</b>")
+                    for t in to_show:
+                        t_id = t.get("id")
+                        escaped_content = _escape_html(t.get("content", "").strip())
+                        due_time = t.get("due", {}).get("datetime")
+                        time_str = ""
+                        if due_time:
+                            try:
+                                dt_due = datetime.fromisoformat(due_time.replace("Z", "+00:00")).astimezone(tz)
+                                time_str = f" [at {dt_due.strftime('%I:%M %p').lstrip('0')}]"
+                            except Exception:
+                                pass
+                        if t_id:
+                            lines.append(f"  • <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a>{time_str}")
+                        else:
+                            lines.append(f"  • {escaped_content}{time_str}")
+                    lines.append("")
+
+                # Rule 6 & 8: Sacred Family & Fitness Anchors
+                if family_anchors or fitness_anchors:
+                    lines.append("<b>☖ Protected Family & Fitness Anchors:</b>")
+                    for t in family_anchors + fitness_anchors:
+                        t_id = t.get("id")
+                        escaped_content = _escape_html(t.get("content", "").strip())
+                        role = _classify_task_role(t)
+                        emoji = "🌸" if role == "family_anchor" else "💪"
+                        if t_id:
+                            lines.append(f"  • {emoji} <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a>")
+                        else:
+                            lines.append(f"  • {emoji} {escaped_content}")
+                    lines.append("<i>Family & fitness anchors are already protected. I’m not counting them as workload.</i>")
+                    lines.append("")
+
+                # Stuck task intervention block (Rule 3)
+                if stuck_tasks:
+                    lines.append("<b>⚠️ Stuck Tasks Needing Intervention:</b>")
+                    for t in stuck_tasks[:2]:
+                        escaped_content = _escape_html(t.get("content", "").strip())
+                        count = shown_counts.get(t.get("id"), 5)
+                        lines.append(f"  • <b>{escaped_content}</b> (carried forward {count} times)")
+                    lines.append("<i>These tasks keep surviving. Use the options below to shrink, defer, or archive them.</i>")
+                    lines.append("")
+
+                # Summarize remaining routine/admin items stress-free
+                total_remaining_routines = len(tomorrow_workload_tasks) - len(to_show) - len([st for st in stuck_tasks if st in tomorrow_workload_tasks])
+                if total_remaining_routines > 0:
+                    lines.append("<b>🔄 Routines & Low-Pressure Backlog:</b>")
+                    lines.append(f"Plus {total_remaining_routines} lower-priority routine/admin item{'s' if total_remaining_routines != 1 else ''}, summarized for tomorrow morning. No need to mentally sort them tonight.")
+                    lines.append("")
+
+                # Rule 1 & 8: Support and clean exit closure line (no disturb my nervous system)
+                closure_options = [
+                    "Nothing else needs sorting tonight.",
+                    "Tomorrow has a first move. You can leave the rest for morning.",
+                    "The list is captured. You do not need to keep it in your head."
+                ]
+                day_of_month = local_now.day
+                closure_line = closure_options[day_of_month % len(closure_options)]
+                lines.append(f"<i>{closure_line}</i>")
+                lines.append("<i>Tomorrow morning: spend 10 minutes deciding what to reschedule, delete, delegate, or do. Enjoy a restful evening! 🌟</i>")
+
+                # Inline buttons for feedback controls (Rule 5)
+                buttons = [
+                    {"text": "🧹 Triage Overdue", "callback_data": "po:briefing:triage"},
+                    {"text": "🌙 Quiet Mode", "callback_data": "po:briefing:quiet"},
+                    {"text": "⭐ Show Top 3 Only", "callback_data": "po:briefing:top3"}
+                ]
+                if stuck_tasks:
+                    fs_id = stuck_tasks[0].get("id")
+                    buttons.append({"text": "⚡ Shrink Stuck Task", "callback_data": f"po:stuck:shrink:{fs_id}"})
+                    buttons.append({"text": "💤 Move to Someday", "callback_data": f"po:stuck:someday:{fs_id}"})
+
+                # Track predicted top task IDs for learning loop evaluation tomorrow
+                predicted_top_ids = [t.get("id") for t in to_show if t.get("id")]
+                briefing_predictions = operator_state.setdefault("briefing_predictions", {})
+                briefing_predictions[today_str] = {
+                    "predicted_top_tasks": predicted_top_ids,
+                    "completed": False
+                }
+
+                _safe_send_telegram_message("\n".join(lines), force=True, parse_mode="HTML", buttons=buttons)
+            except Exception:
+                pass
+
+    # 4. Periodic past due task nudge checks
+    # Only run the check every 15 minutes to avoid rate-limiting or heavy resources
+    last_past_due_check = int(operator_state.get("last_past_due_check_ts") or 0)
+    if 7 <= local_hour < 22 and (now_ts - last_past_due_check >= 900):
+        operator_state["last_past_due_check_ts"] = now_ts
+        state_changed = True
+
+        try:
+            from datetime import date
+
+            # Fetch active tasks due today or overdue
+            tasks = _focus_guard_read_todoist_tasks(filter="today | overdue")
+            reminded_task_ids = operator_state.setdefault("past_due_reminders_sent", [])
+            postpone_counts = operator_state.get("task_postpone_counts", {})
+
+            # Load presence state
+            presence_s = _read_json(PRESENCE_STATE_PATH, {})
+            location = str(presence_s.get("location", "home")).strip().lower()
+            state = str(presence_s.get("state", "")).strip().lower()
+            active_cat = str(presence_s.get("active_category", "")).strip().lower()
+
+            overdue_to_remind = []
+
+            for t in tasks:
+                t_id = t.get("id")
+                if not t_id:
+                    continue
+
+                due = t.get("due") or {}
+                due_date_str = due.get("date")
+                if not due_date_str:
+                    continue
+
+                # Check category of the task
+                task_content = t.get("content", "").strip()
+                labels = [str(l).lower() for l in t.get("labels") or []]
+                is_gym = "fitness_anchor" in labels or "workout" in task_content.lower() or "gym" in task_content.lower()
+                is_family = "family_anchor" in labels or any(w in task_content.lower() for w in ["wife", "son", "playtime", "outing"])
+                is_business = "business_owner" in labels or "deep_work" in labels or "owner" in task_content.lower() or "ceo" in task_content.lower()
+
+                # 1. Focus Protection Rule
+                if is_business and state == "desk" and active_cat == "editor":
+                    # Deep Work Active -> Suppress work nudges to protect flow
+                    continue
+
+                # 2. Location & Boundary Rules
+                if is_gym and location == "gym":
+                    # Already at the gym -> suppress gym nudge
+                    continue
+                if is_business and location == "home":
+                    # Work-to-Home boundary lock -> mute work nudges at home
+                    continue
+
+                is_past_due = False
+                reason = ""
+                milestone = ""
+
+                # If there's a specific time component in due_date_str
+                if "T" in due_date_str:
+                    try:
+                        dt_due = _parse_todoist_datetime(due_date_str)
+                        if dt_due.tzinfo is None:
+                            dt_due = dt_due.replace(tzinfo=tz)
+
+                        elapsed_minutes = (local_now - dt_due).total_seconds() / 60
+
+                        # Milestones:
+                        if is_gym and location == "home" and -15 <= elapsed_minutes < 0:
+                            # 15 minutes before gym time and still at home -> transition prep
+                            milestone = "gym_transition"
+                            is_past_due = True
+                            reason = "gym_prep"
+                        elif 0 <= elapsed_minutes <= 5:
+                            # 0 to 5 minutes past (Due time)
+                            milestone = "due_time"
+                            is_past_due = True
+                            reason = "past_due_time"
+                        elif 15 <= elapsed_minutes <= 25:
+                            # 20 minutes past (Short delay)
+                            milestone = "short_delay"
+                            is_past_due = True
+                            reason = "past_due_time"
+                        elif 55 <= elapsed_minutes <= 65:
+                            # 60 minutes past (Long delay)
+                            milestone = "long_delay"
+                            is_past_due = True
+                            reason = "past_due_time"
+                    except Exception:
+                        pass
+                else:
+                    # All-day task (e.g. '2026-05-25')
+                    try:
+                        date_part = due_date_str.split("T")[0]
+                        task_due_date = date.fromisoformat(date_part)
+                        if task_due_date < local_now.date():
+                            milestone = "overdue_backlog"
+                            is_past_due = True
+                            reason = "past_due_date"
+                    except Exception:
+                        pass
+
+                if is_past_due and milestone:
+                    reminder_key = f"{t_id}:{due_date_str}:{milestone}"
+                    if reminder_key not in reminded_task_ids:
+                        overdue_to_remind.append((t, reminder_key, reason, milestone))
+
+            if overdue_to_remind:
+                # Limit to 1 task reminder per scan (highest priority first)
+                overdue_to_remind.sort(key=lambda item: int(item[0].get("priority", 1)), reverse=True)
+
+                target_task, reminder_key, reason, milestone = overdue_to_remind[0]
+                task_content = target_task.get("content", "").strip()
+                t_id = target_task.get("id")
+
+                escaped_content = _escape_html(task_content)
+                due_info = target_task.get("due") or {}
+                time_str = ""
+                if "T" in due_info.get("date", ""):
+                    try:
+                        dt_due = _parse_todoist_datetime(due_info["date"]).astimezone(tz)
+                        time_str = f" scheduled for {dt_due.strftime('%I:%M %p').lstrip('0')}"
+                    except Exception:
+                        pass
+
+                labels = [str(l).lower() for l in target_task.get("labels") or []]
+                is_gym = "fitness_anchor" in labels or "workout" in task_content.lower() or "gym" in task_content.lower()
+                is_family = "family_anchor" in labels or any(w in task_content.lower() for w in ["wife", "son", "playtime", "outing"])
+                is_business = "business_owner" in labels or "deep_work" in labels or "owner" in task_content.lower() or "ceo" in task_content.lower()
+
+                # Check Deferral Fatigue (postponed >= 3 times)
+                deferral_count = postpone_counts.get(t_id, 0)
+
+                if deferral_count >= 3:
+                    # Deferral fatigue intervention message
+                    msg = f"<b>⚠️ Deferral fatigue detected: {escaped_content}</b>\n\nMikail, we've deferred this priority {deferral_count} times today. Rather than pushing against friction, let's play it smart. We can either park it guilt-free in Someday/Maybe to clear your headspace, or resize it to a tiny 2-minute micro-step to build momentum. What's your play? 🌸"
+                    buttons = [
+                        {"text": "💤 Park in Someday", "callback_data": f"po:task_someday:{t_id}"},
+                        {"text": "⚡ Shrink to 2-Min", "callback_data": f"po:task_shrink:{t_id}"},
+                        {"text": "📅 Defer Tomorrow", "callback_data": f"po:task_defer:{t_id}"}
+                    ]
+                else:
+                    # Specialized messaging based on category & milestone
+                    if is_gym:
+                        if reason == "gym_prep":
+                            msg = f"<b>🏋️‍♂️ Transition Prep: Lower A Workout</b>\n\nHey Mikail, checking in. Your workout starts in 15 minutes. Let's pack your bag, put down the screen, and transition cleanly to gym mode! Your V-Taper habit starts with this one transition. 💪"
+                        else:
+                            msg = f"<b>💪 Fitness Nudge: {escaped_content}</b>\n\nHey Mikail! Just a gentle, supportive check-in. This workout{time_str} is past its scheduled time. Let's get this in, move some weight, and stick to your V-Taper habit today. You'll feel incredible once it's done! 🏋️‍♂️"
+                    elif is_family:
+                        msg = f"<b>☖ Family Focus: {escaped_content}</b>\n\nHi Mikail, checking in. This family connection anchor{time_str} is past its time. Let's make sure we put down the screen, step away from work, and give your full, loving attention to your family. They are the core of it all! 🌸"
+                    elif is_business:
+                        msg = f"<b>🎯 High-Priority Business Focus: {escaped_content}</b>\n\nHey Mikail! Quick check-in on this business focus item{time_str}. If possible, let's get this one main priority step done now so you can close the loop and protect your evening boundary. You've got this! 🚀"
+                    else:
+                        if reason == "past_due_time":
+                            if milestone == "short_delay":
+                                msg = f"<b>🌸 Gentle Reminder: {escaped_content}</b>\n\nHey Mikail! Just noticing this task is past its due time. If you can, let's get this minor piece done now and clear it off your list! ✨"
+                            elif milestone == "long_delay":
+                                msg = f"<b>⏳ Final Check-In: {escaped_content}</b>\n\nMikail, this task is an hour past due. Let's either get it done in a quick sprint now, or reschedule it honestly to keep your list clean! 🧹"
+                            else:
+                                msg = f"<b>🌸 Gentle Check-In: {escaped_content}</b>\n\nHey Mikail! Just noticing this task{time_str} is past its scheduled due time today. If it's realistic, let's jump in and get it done now so you can keep the day's momentum going! ✨"
+                        else:
+                            msg = f"<b>✨ Backlog Check-In: {escaped_content}</b>\n\nHi Mikail! A friendly nudge about this overdue task from your backlog. Let's take just 5 to 10 minutes to tackle it today and keep your system clear and light! 🧹"
+
+                    buttons = [
+                        {"text": "✅ Done", "callback_data": f"po:task_complete:{t_id}"},
+                        {"text": "📅 Tomorrow", "callback_data": f"po:task_defer:{t_id}"},
+                        {"text": "🗑️ Archive", "callback_data": f"po:task_delete:{t_id}"}
+                    ]
+
+                _safe_send_telegram_message(msg, parse_mode="HTML", buttons=buttons)
+
+                reminded_task_ids.append(reminder_key)
+                if len(reminded_task_ids) > 200:
+                    operator_state["past_due_reminders_sent"] = reminded_task_ids[-200:]
+        except Exception as e:
+            print(f"Error in past due task nudger: {e}")
 
     if state_changed:
         _operator_write_state(operator_state)
@@ -3842,12 +4932,12 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
     if not event_type:
         raise ValueError("event_type is required")
     now = datetime.now(timezone.utc)
-    
+
     # Parse payload if present (or flat payload fallback)
     payload = args.get("payload")
     if not isinstance(payload, dict):
         payload = {k: v for k, v in args.items() if k not in {"event_type", "source", "dedupe_key"}}
-    
+
     # 1. Event Bus Log and Deduplication
     source = str(args.get("source") or "manual").strip()
     dedupe_key = args.get("dedupe_key")
@@ -3948,6 +5038,8 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
         result = _runtime_handle_voice_capture(args)
     elif event_type == "activitywatch_heartbeat":
         result = _runtime_handle_activitywatch_heartbeat(args)
+    elif event_type.startswith("gym."):
+        result = _runtime_handle_gym_event(args)
     elif event_type == "telegram_feedback":
         result = _operator_record_feedback(args, now=now)
     elif event_type.startswith("desktop.distraction_"):
@@ -5194,6 +6286,10 @@ def _execute_todoist(payload: Dict[str, Any]) -> Dict[str, Any]:
             return {"success": True, "action": action, "task": resp.json()}
         if action == "close_task":
             task_id = str(payload.get("task_id") or "").strip()
+            if "id=" in task_id:
+                task_id = task_id.split("id=")[-1]
+            elif "/" in task_id:
+                task_id = task_id.rstrip("/").split("/")[-1]
             if not task_id:
                 raise ValueError("task_id is required")
             resp = client.post(f"{TODOIST_BASE}/tasks/{task_id}/close", headers=_todoist_headers())
@@ -5221,12 +6317,120 @@ def _execute_todoist(payload: Dict[str, Any]) -> Dict[str, Any]:
             return {"success": True, "action": action, "task_id": task_id}
         if action == "reopen_task":
             task_id = str(payload.get("task_id") or "").strip()
+            if "id=" in task_id:
+                task_id = task_id.split("id=")[-1]
+            elif "/" in task_id:
+                task_id = task_id.rstrip("/").split("/")[-1]
             if not task_id:
                 raise ValueError("task_id is required")
             resp = client.post(f"{TODOIST_BASE}/tasks/{task_id}/reopen", headers=_todoist_headers())
             resp.raise_for_status()
             return {"success": True, "action": action, "task_id": task_id}
+        if action == "update_task":
+            task_id = str(payload.get("task_id") or "").strip()
+            if "id=" in task_id:
+                task_id = task_id.split("id=")[-1]
+            elif "/" in task_id:
+                task_id = task_id.rstrip("/").split("/")[-1]
+            if not task_id:
+                raise ValueError("task_id is required for update_task")
+            body = {
+                k: v
+                for k, v in payload.items()
+                if k
+                in {
+                    "content",
+                    "description",
+                    "due_string",
+                    "due_date",
+                    "due_datetime",
+                    "labels",
+                    "priority",
+                }
+                and v not in (None, "", [])
+            }
+            resp = client.post(f"{TODOIST_BASE}/tasks/{task_id}", headers=_todoist_headers(), json=body)
+            resp.raise_for_status()
+            return {"success": True, "action": action, "task_id": task_id, "task": resp.json()}
     raise ValueError(f"Unsupported Todoist approval action: {action}")
+
+
+def _enrich_and_sort_todoist_hierarchy(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not tasks:
+        return []
+
+    task_map = {t.get("id"): t for t in tasks if t.get("id")}
+
+    for t in tasks:
+        parent_id = t.get("parent_id") or t.get("parentId")
+        if parent_id and parent_id in task_map:
+            t["is_subtask"] = True
+            parent_task = task_map[parent_id]
+            t["parent_content"] = str(parent_task.get("content") or parent_task.get("name") or parent_task.get("title") or "").strip()
+            t["indentation_level"] = 1
+        else:
+            t["is_subtask"] = False
+            t["parent_content"] = None
+            t["indentation_level"] = 0
+
+    roots = []
+    children_map = {}
+
+    for t in tasks:
+        parent_id = t.get("parent_id") or t.get("parentId")
+        if parent_id and parent_id in task_map:
+            if parent_id not in children_map:
+                children_map[parent_id] = []
+            children_map[parent_id].append(t)
+        else:
+            roots.append(t)
+
+    for pid in children_map:
+        children_map[pid].sort(key=lambda x: (x.get("child_order") or 0, x.get("id") or ""))
+
+    sorted_tasks = []
+    seen = set()
+
+    def traverse(task, depth):
+        tid = task.get("id")
+        if not tid or tid in seen:
+            return
+        seen.add(tid)
+        task["indentation_level"] = depth
+        sorted_tasks.append(task)
+
+        if tid in children_map:
+            for child in children_map[tid]:
+                traverse(child, depth + 1)
+
+    for root in roots:
+        traverse(root, 0)
+
+    for t in tasks:
+        tid = t.get("id")
+        if tid and tid not in seen:
+            t["indentation_level"] = 0
+            sorted_tasks.append(t)
+
+    return sorted_tasks
+
+
+def _render_hierarchical_markdown_list(tasks: List[Dict[str, Any]]) -> str:
+    if not tasks:
+        return "No tasks found."
+
+    lines = []
+    for t in tasks:
+        level = t.get("indentation_level", 0)
+        indent = "    " * level
+        title = str(t.get("content") or t.get("name") or "").strip()
+        t_id = t.get("id")
+
+        lines.append(f"{indent}*   {title}")
+        if t_id:
+            lines.append(f"{indent}    Link: https://app.todoist.com/app/task/{t_id}")
+
+    return "\n".join(lines)
 
 
 def _todoist_native_call(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -5252,9 +6456,56 @@ def _todoist_native_call(args: Dict[str, Any]) -> Dict[str, Any]:
                 params["section_id"] = args.get("section_id")
             elif args.get("label"):
                 params["label"] = args.get("label")
-            resp = client.get(f"{TODOIST_BASE}/tasks", headers=_todoist_headers(), params=params)
-            resp.raise_for_status()
-            tasks = (resp.json() or {}).get("results") or []
+            tasks = _todoist_native_fetch_tasks(client, params, args.get("limit"))
+
+            filter_str = str(args.get("filter") or "").strip().lower()
+            if filter_str:
+                from datetime import datetime, timedelta
+                today_str = _operator_local_date()
+                try:
+                    today_dt = datetime.fromisoformat(today_str)
+                    tomorrow_str = (today_dt + timedelta(days=1)).date().isoformat()
+                except Exception:
+                    tomorrow_str = ""
+
+                filtered_tasks = []
+                for t in tasks:
+                    labels = [str(l).lower() for l in t.get("labels") or []]
+                    excluded_labels = {
+                        "exclude_workload", "reference", "hermes_hidden", "checklist_item", "duplicate",
+                        "someday", "maybe", "someday_maybe", "someday-maybe", "someday/maybe"
+                    }
+                    if any(l in excluded_labels for l in labels):
+                        continue
+
+                    due = t.get("due")
+                    if isinstance(due, dict) and due.get("date"):
+                        date_part = str(due["date"]).split("T")[0]
+                        is_recurring = due.get("is_recurring") is True
+
+                        # Skip overdue recurring routines to avoid past routine carryover clutter
+                        if is_recurring and date_part < today_str:
+                            continue
+
+                        if "today" in filter_str and "overdue" in filter_str:
+                            if date_part <= today_str:
+                                filtered_tasks.append(t)
+                        elif "today" in filter_str:
+                            if date_part == today_str:
+                                filtered_tasks.append(t)
+                        elif "overdue" in filter_str:
+                            if date_part < today_str:
+                                filtered_tasks.append(t)
+                        elif "tomorrow" in filter_str:
+                            if tomorrow_str and date_part == tomorrow_str:
+                                filtered_tasks.append(t)
+                        else:
+                            filtered_tasks.append(t)
+                    else:
+                        if not any(k in filter_str for k in ["today", "overdue", "tomorrow"]):
+                            filtered_tasks.append(t)
+                tasks = filtered_tasks
+
             query = str(args.get("query") or "").strip().lower()
             match_mode = "all"
             if query:
@@ -5274,10 +6525,12 @@ def _todoist_native_call(args: Dict[str, Any]) -> Dict[str, Any]:
                 top_matches = [_compact_record_match(item, "content", "description") for item in ranked[:5]]
                 summary = _summarize_record_matches(query, ranked, "content")
             else:
+                tasks = _enrich_and_sort_todoist_hierarchy(tasks)
                 top_matches = []
                 summary = f"Found {len(tasks)} Todoist task(s)."
             _append_event("todoist_read", {"action": action, "count": len(tasks), "query": query, "match_mode": match_mode, "connector": "native"})
-            return {"success": True, "action": action, "count": len(tasks), "match_mode": match_mode, "summary": summary, "top_matches": top_matches, "tasks": tasks}
+            formatted_list = _render_hierarchical_markdown_list(tasks)
+            return {"success": True, "action": action, "count": len(tasks), "match_mode": match_mode, "summary": summary, "top_matches": top_matches, "tasks": tasks, "formatted_list": formatted_list}
         if action == "add_task":
             content = str(args.get("content") or "").strip()
             if not content:
@@ -5303,7 +6556,67 @@ def _todoist_native_call(args: Dict[str, Any]) -> Dict[str, Any]:
                 benefit="Hermes can keep your task system in sync with chat decisions.",
                 payload=args,
             ))
+        if action == "update_task":
+            task_id = str(args.get("task_id") or "").strip()
+            if not task_id:
+                return json.loads(_tool_error("task_id is required for update_task"))
+            return json.loads(_create_approval(
+                tool_name="personal_todoist",
+                action=action,
+                summary=f"update Todoist task {task_id}",
+                reason="This updates the due date, labels, or content of a real Todoist task.",
+                benefit="Hermes can keep your tasks accurately scheduled and synchronized.",
+                payload=args,
+            ))
     return json.loads(_tool_error(f"Unsupported Todoist action: {action}"))
+
+
+def _todoist_native_fetch_tasks(client: Any, params: Dict[str, Any], requested_limit: Any = None) -> List[Dict[str, Any]]:
+    base_params = dict(params or {})
+    try:
+        max_total = int(requested_limit) if requested_limit is not None else 500
+    except Exception:
+        max_total = 500
+    max_total = max(1, min(max_total, 1000))
+    page_limit = min(max_total, 100)
+    tasks: List[Dict[str, Any]] = []
+    cursor = str(base_params.pop("cursor", "") or "").strip()
+    seen_cursors = set()
+    for _ in range(20):
+        page_params = dict(base_params)
+        page_params["limit"] = min(page_limit, max_total - len(tasks))
+        if cursor:
+            page_params["cursor"] = cursor
+        resp = client.get(f"{TODOIST_BASE}/tasks", headers=_todoist_headers(), params=page_params)
+        resp.raise_for_status()
+        payload = resp.json() or {}
+        if isinstance(payload, list):
+            page_tasks = payload
+            next_cursor = ""
+        else:
+            page_tasks = payload.get("results") or payload.get("tasks") or []
+            next_cursor = (
+                payload.get("next_cursor")
+                or payload.get("nextCursor")
+                or ((payload.get("pagination") or {}).get("next_cursor"))
+                or ((payload.get("pagination") or {}).get("nextCursor"))
+                or ""
+            )
+        # Filter out reference, hidden, and checklist tasks from the active listings
+        page_tasks_filtered = []
+        for t in page_tasks:
+            lbls = [str(l).lower() for l in t.get("labels") or []]
+            if any(l in {"exclude_workload", "reference", "hermes_hidden", "checklist_item", "duplicate"} for l in lbls):
+                continue
+            page_tasks_filtered.append(t)
+        tasks.extend(page_tasks_filtered)
+        if len(tasks) >= max_total:
+            break
+        cursor = str(next_cursor or "").strip()
+        if not cursor or cursor in seen_cursors:
+            break
+        seen_cursors.add(cursor)
+    return tasks[:max_total]
 
 
 def _todoist_connector_mode() -> str:
@@ -7748,9 +9061,63 @@ def _operator_adaptive_nudge_route(
     }
 
 
+def _operator_calculate_nudge_trust_score(
+    task: Optional[Dict[str, Any]],
+    presence: Dict[str, Any],
+    recent_nudges: Dict[str, Any],
+    mode: str,
+    intel: Dict[str, Any],
+    now_hour: int
+) -> float:
+    score = 2.0
+    if not task:
+        return 0.0
+    content = str(task.get("content") or "").lower()
+    labels = [str(l).lower() for l in task.get("labels") or []]
+
+    # 1. Timing Quality
+    if 9 <= now_hour < 18:
+        score += 1.5
+    else:
+        score -= 2.0
+
+    # 2. Urgency
+    priority = int(task.get("priority") or 1)
+    if priority >= 3 or "focus" in labels or "deep_work" in labels:
+        score += 1.5
+
+    # 3. Actionability
+    action_verbs = {
+        "read", "write", "code", "draft", "call", "email", "review", "plan",
+        "clean", "prep", "build", "design", "buy", "send", "fix", "check"
+    }
+    has_verb = any(content.startswith(v) for v in action_verbs)
+    if has_verb:
+        score += 1.0
+
+    # 4. Repetition penalty
+    recent_sent = recent_nudges.get("sent_nudges") or []
+    for n in recent_sent[-3:]:
+        if n.get("task_id") == task.get("id"):
+            score -= 3.0
+            break
+
+    # 5. Emotional load penalty
+    overdue_count = len(intel.get("overdue_tasks") or [])
+    if overdue_count > 15:
+        score -= 1.0
+
+    return score
+
+
 def _operator_nudge_quality_gate(*, mode: str, top_task: Optional[Dict[str, Any]], presence: Dict[str, Any], focus_state: Dict[str, Any], recent_nudges: Dict[str, Any], recommended_next_action: str, intel: Dict[str, Any], now_hour: int) -> Dict[str, Any]:
     reasons: List[str] = []
     score = 0.35
+
+    # Run user-trust/notification credibility gate
+    trust_score = _operator_calculate_nudge_trust_score(top_task, presence, recent_nudges, mode, intel, now_hour)
+    if trust_score < 3.0:
+        reasons.append(f"Notification value score too low ({trust_score:.2f} < 3.00). Suppressing message to protect nervous system.")
     if mode == "shield":
         reasons.append("Shield mode selected.")
     if not _telegram_messages_allowed_now(now_hour):
@@ -9140,8 +10507,23 @@ def handle_runtime(args: Dict[str, Any], **_: Any) -> str:
         if action == "context_budget_audit":
             result = _runtime_context_budget_audit(args)
             return _tool_result(result)
+        if action == "context_contributors_report":
+            result = _runtime_context_contributors_report(args)
+            return _tool_result(result)
         if action == "profile_prune_plan":
             result = _runtime_profile_prune_plan(args)
+            return _tool_result(result)
+        if action == "secret_inventory":
+            result = _runtime_secret_inventory(args)
+            return _tool_result(result)
+        if action == "no_agent_cron_plan":
+            result = _runtime_no_agent_cron_plan(args)
+            return _tool_result(result)
+        if action == "tool_router_status":
+            result = _runtime_tool_router_status(args)
+            return _tool_result(result)
+        if action == "tool_router_simulate":
+            result = _runtime_tool_router_simulate(args)
             return _tool_result(result)
         if action == "memory_tier":
             result = _runtime_memory_tier(args)
@@ -9349,12 +10731,12 @@ def handle_adaptive_companion(args: Dict[str, Any], **_: Any) -> str:
             mood_status = _mood_router_status()
             local_now = datetime.now(timezone.utc).astimezone(_runtime_local_tz())
             mood_rec = _build_mood_recommendation(mood_status, local_now)
-            
+
             # Escape base message to prevent Telegram HTML parse errors on raw task characters
             escaped_message = _escape_html(message)
             if mood_rec:
                 escaped_message += mood_rec
-                
+
             _safe_send_telegram_message(escaped_message, parse_mode="HTML")
             nudge_budget = _nudge_budget_record_sent(
                 category="pressure",
@@ -9368,6 +10750,13 @@ def handle_adaptive_companion(args: Dict[str, Any], **_: Any) -> str:
             state["last_intervention_family"] = family
             state["last_intervention_at"] = now.isoformat()
             recent_interventions = list(state.get("recent_interventions") or [])
+            # Fetch active task IDs to support Same Observation Suppression on subsequent runs
+            try:
+                current_active_tasks = _focus_guard_read_todoist_tasks()
+                active_task_ids = [str(t.get("id")) for t in current_active_tasks if t.get("id")]
+            except Exception:
+                active_task_ids = []
+
             recent_interventions.append(
                 {
                     "trigger": trigger["kind"],
@@ -9375,7 +10764,10 @@ def handle_adaptive_companion(args: Dict[str, Any], **_: Any) -> str:
                     "pattern": pattern,
                     "intervention_family": family,
                     "task_label": trigger.get("task_label"),
-                    "task_id": ((focus_state.get("most_important_task") or {}).get("id")),
+                    "task_id": trigger.get("task_id") or ((focus_state.get("most_important_task") or {}).get("id")),
+                    "side_task_label": trigger.get("side_task_label"),
+                    "side_task_id": trigger.get("side_task_id"),
+                    "active_task_ids": active_task_ids,
                     "strategy": strategy,
                     "inferred_state": inferred_state,
                     "message": message,
@@ -9760,7 +11152,7 @@ TODOIST_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["status", "list_tasks", "search_tasks", "focus_guard_run", "add_task", "close_task", "reopen_task", "intelligence"]},
+            "action": {"type": "string", "enum": ["status", "list_tasks", "search_tasks", "focus_guard_run", "add_task", "close_task", "reopen_task", "update_task", "intelligence"]},
             "query": {"type": "string"},
             "filter": {"type": "string"},
             "project_id": {"type": ["string", "integer"]},
@@ -9772,6 +11164,7 @@ TODOIST_SCHEMA = {
             "labels": {"type": "array", "items": {"type": "string"}},
             "priority": {"type": "integer"},
             "due_string": {"type": "string"},
+            "due_date": {"type": "string"},
             "due_datetime": {"type": "string"},
             "limit": {"type": "integer"},
             "include_context": {"type": "boolean"}
@@ -9801,7 +11194,7 @@ RUNTIME_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["status", "incidents", "provider_chain", "context_budget_audit", "profile_prune_plan", "memory_tier", "isolation_profile_plan", "intention_gate", "orchestration_job", "upstream_status", "watch_upstream", "live_watch", "live_watch_status", "presence_status", "ensure_todoist_mcp", "mood_status", "mood_route", "event_ingest", "self_improve", "self_improve_report", "self_improve_pipeline", "calendar_status", "calendar_event", "operator_brief", "agi_operator_cycle", "weekly_review", "todoist_lint_report", "common_sense_decision", "event_log_state", "memory_console", "todoist_rule_store", "rollover_preview", "approval_bundle", "self_improve_proposals", "external_systems_status", "hermes_capabilities_dossier", "hermes_system_audit", "trace_status", "trace_event", "eval_suite_export", "operating_snapshot", "operating_delta"]},
+            "action": {"type": "string", "enum": ["status", "incidents", "provider_chain", "context_budget_audit", "context_contributors_report", "profile_prune_plan", "secret_inventory", "no_agent_cron_plan", "tool_router_status", "tool_router_simulate", "memory_tier", "isolation_profile_plan", "intention_gate", "orchestration_job", "upstream_status", "watch_upstream", "live_watch", "live_watch_status", "presence_status", "ensure_todoist_mcp", "mood_status", "mood_route", "event_ingest", "self_improve", "self_improve_report", "self_improve_pipeline", "calendar_status", "calendar_event", "operator_brief", "agi_operator_cycle", "weekly_review", "todoist_lint_report", "common_sense_decision", "event_log_state", "memory_console", "todoist_rule_store", "rollover_preview", "approval_bundle", "self_improve_proposals", "external_systems_status", "hermes_capabilities_dossier", "hermes_system_audit", "trace_status", "trace_event", "eval_suite_export", "operating_snapshot", "operating_delta"]},
             "limit": {"type": "integer"},
             "hours": {"type": "integer"},
             "repo_path": {"type": "string"},
@@ -9834,6 +11227,9 @@ RUNTIME_SCHEMA = {
             "profile_name": {"type": "string"},
             "profile": {"type": "string"},
             "intent": {"type": "string"},
+            "explicit_intent": {"type": "string"},
+            "tool_name": {"type": "string"},
+            "tool": {"type": "string"},
             "title": {"type": "string"},
             "mode": {"type": "string"},
         },
@@ -9977,8 +11373,8 @@ def _runtime_build_arrive_briefing(tasks: List[Dict[str, Any]], projects_map: Di
         return f"starts in {hours}h {minutes % 60:02d}m"
 
     lines = [
-        f"I received a home/desk arrival signal at {time_str}.",
-        "I am treating this as context for what is possible now, not proof that you are available.",
+        f"🏡 <b>Welcome Home!</b>",
+        f"I received your arrival signal at {time_str}. Here is your custom evening digest alongside the <b>Hermes Dock</b>:",
         "",
     ]
 
@@ -9993,7 +11389,7 @@ def _runtime_build_arrive_briefing(tasks: List[Dict[str, Any]], projects_map: Di
             due_str = f" (due {due_val})" if due_val else ""
             escaped_due_str = _escape_html(due_str)
             if t_id:
-                lines.append(f"  \u2022 <a href=\"https://todoist.com/showTask?id={t_id}\">{escaped_content}</a>{escaped_due_str}")
+                lines.append(f"  \u2022 <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a>{escaped_due_str}")
             else:
                 lines.append(f"  \u2022 {escaped_content}{escaped_due_str}")
         lines.append("")
@@ -10012,7 +11408,7 @@ def _runtime_build_arrive_briefing(tasks: List[Dict[str, Any]], projects_map: Di
                 due_str += f" [{due_status}]"
             escaped_due_str = _escape_html(due_str)
             if t_id:
-                lines.append(f"  \u2022 <a href=\"https://todoist.com/showTask?id={t_id}\">{escaped_content}</a>{escaped_due_str}")
+                lines.append(f"  \u2022 <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a>{escaped_due_str}")
             else:
                 lines.append(f"  \u2022 {escaped_content}{escaped_due_str}")
     elif not overdue:
@@ -10052,7 +11448,7 @@ def _runtime_build_leave_briefing(tasks: List[Dict[str, Any]]) -> str:
             due_str = f" (due {due_val})" if due_val else ""
             escaped_due_str = _escape_html(due_str)
             if t_id:
-                lines.append(f"  \u2022 <a href=\"https://todoist.com/showTask?id={t_id}\">{escaped_content}</a>{escaped_due_str}")
+                lines.append(f"  \u2022 <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a>{escaped_due_str}")
             else:
                 lines.append(f"  \u2022 {escaped_content}{escaped_due_str}")
         lines.append("\nIf one errand naturally fits the trip, do it. If not, ignore this until you are back.")
@@ -10070,7 +11466,7 @@ def _handle_location_update(args: Dict[str, Any]) -> None:
     now = datetime.now(timezone.utc).isoformat()
     state = _read_json(PRESENCE_STATE_PATH, {})
     old_location = state.get("location", "").strip().lower()
-    
+
     state["location"] = location
     state["last_location_update"] = now
     state["confidence"] = 1.0
@@ -10080,7 +11476,25 @@ def _handle_location_update(args: Dict[str, Any]) -> None:
     _write_json(PRESENCE_STATE_PATH, state)
 
     # Trigger briefings on transitions
-    if old_location == "away" and location in {"home", "desk"}:
+    time_since_last_update = 999999.0
+    if state.get("last_location_update"):
+        try:
+            last_ts = datetime.fromisoformat(state["last_location_update"])
+            now_ts = datetime.fromisoformat(now)
+            time_since_last_update = (now_ts - last_ts).total_seconds()
+        except Exception:
+            pass
+
+    should_trigger_arrival = False
+    if location in {"home", "desk"}:
+        if old_location == "away" or old_location in {"", "unknown"}:
+            should_trigger_arrival = True
+        elif old_location == location and time_since_last_update > 1800:
+            should_trigger_arrival = True
+        elif old_location == "desk" and location == "home" and time_since_last_update > 1800:
+            should_trigger_arrival = True
+
+    if should_trigger_arrival:
         try:
             tasks = _focus_guard_read_todoist_tasks(filter="today | overdue")
             projects_map = {}
@@ -10122,21 +11536,376 @@ def _handle_location_update(args: Dict[str, Any]) -> None:
         except Exception as e:
             pass
 
-
 def handle_location_slash_command(raw_args: str) -> str:
     location = raw_args.strip()
     if not location:
         return "Usage: /location <state> (e.g. /location away, /location focus, /location desk)"
-    
+
     _handle_location_update({"location": location, "source": "telegram-bot"})
     cleanup_res = _run_auto_cleanup_routines()
     logs = cleanup_res.get("logs", [])
-    
+
     msg = f"📍 Location updated to: {location}"
     if logs:
         msg += "\n\n🧹 Auto-Cleanup triggered:\n" + "\n".join([f"• {l}" for l in logs])
-    
+
     return msg
+
+
+
+def handle_briefing_slash_command(command: str, args_str: str) -> str:
+    from datetime import datetime, date
+    tz = _runtime_local_tz()
+    local_now = datetime.now(tz)
+    today_date = local_now.date()
+    tomorrow_date = today_date + timedelta(days=1)
+
+    # Read all tasks
+    try:
+        all_tasks = _focus_guard_read_todoist_tasks()
+    except Exception as e:
+        return f"❌ Failed to fetch Todoist tasks: {e}"
+
+    cmd = command.strip().lower().replace("/", "")
+
+    if cmd == "show_hidden_tomorrow":
+        hidden_tasks = []
+        for t in all_tasks:
+            due_info = t.get("due") or {}
+            due_date_str = due_info.get("date")
+            if not due_date_str:
+                continue
+            try:
+                date_part = due_date_str.split("T")[0]
+                task_due_date = date.fromisoformat(date_part)
+                if task_due_date == tomorrow_date:
+                    lbls = [str(l).lower() for l in t.get("labels") or []]
+                    role = _classify_task_role(t)
+                    is_sub = t.get("parent_id") or t.get("parentId")
+                    if role in ("reference", "checklist_item", "exclude_workload", "hermes_hidden") or is_sub or any(l in {"exclude_workload", "reference", "hermes_hidden", "checklist_item", "duplicate"} for l in lbls):
+                        hidden_tasks.append(t)
+            except Exception:
+                pass
+
+        if not hidden_tasks:
+            return "🔍 <b>Hidden/Excluded Tasks for Tomorrow:</b>\n\nNo hidden or excluded items found for tomorrow!"
+
+        lines = ["🔍 <b>Hidden/Excluded Tasks for Tomorrow:</b>", "These items are excluded from your active workload count:", ""]
+        for idx, t in enumerate(hidden_tasks, 1):
+            escaped_content = _escape_html(t.get("content", "").strip())
+            t_id = t.get("id")
+            lbls = [l for l in t.get("labels") or []]
+            lbl_str = f" [@{', @'.join(lbls)}]" if lbls else ""
+            if t_id:
+                lines.append(f"  {idx}. <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a>{lbl_str}")
+            else:
+                lines.append(f"  {idx}. {escaped_content}{lbl_str}")
+        return "\n".join(lines)
+
+    elif cmd == "show_task_debt":
+        debt_tasks = []
+        stale_tasks = []
+        for t in all_tasks:
+            due_info = t.get("due") or {}
+            due_date_str = due_info.get("date")
+            if not due_date_str:
+                continue
+            try:
+                date_part = due_date_str.split("T")[0]
+                task_due_date = date.fromisoformat(date_part)
+                if task_due_date < today_date:
+                    overdue_days = (today_date - task_due_date).days
+                    priority = int(t.get("priority") or 1)
+                    if overdue_days >= 7 and priority < 4:
+                        stale_tasks.append((t, overdue_days))
+                    else:
+                        debt_tasks.append((t, overdue_days))
+            except Exception:
+                pass
+
+        lines = []
+        if debt_tasks:
+            lines.append("⏳ <b>Active Overdue Task Debt:</b>")
+            for idx, (t, days) in enumerate(debt_tasks, 1):
+                escaped_content = _escape_html(t.get("content", "").strip())
+                t_id = t.get("id")
+                days_str = f"({days} days overdue)"
+                if t_id:
+                    lines.append(f"  • <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a> {days_str}")
+                else:
+                    lines.append(f"  • {escaped_content} {days_str}")
+            lines.append("")
+        else:
+            lines.append("⏳ <b>Active Overdue Task Debt:</b>\nNo active overdue task debt! Excellent.")
+            lines.append("")
+
+        if stale_tasks:
+            lines.append("🗄️ <b>Stale Backlog (Decayed Overdue):</b>")
+            lines.append("These low-priority items have been overdue for 7+ days and are quarantined:")
+            for idx, (t, days) in enumerate(stale_tasks, 1):
+                escaped_content = _escape_html(t.get("content", "").strip())
+                t_id = t.get("id")
+                days_str = f"({days} days overdue)"
+                if t_id:
+                    lines.append(f"  • <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a> {days_str}")
+                else:
+                    lines.append(f"  • {escaped_content} {days_str}")
+        else:
+            lines.append("🗄️ <b>Stale Backlog:</b>\nNo stale backlog items found.")
+
+        return "\n".join(lines)
+
+    elif cmd == "why_suppressed":
+        hidden_counts = {
+            "reference": 0,
+            "checklist": 0,
+            "routine": 0,
+            "exclude_workload": 0,
+            "stale": 0
+        }
+
+        for t in all_tasks:
+            labels = [str(l).lower() for l in t.get("labels") or []]
+            role = _classify_task_role(t)
+            is_sub = t.get("parent_id") or t.get("parentId")
+
+            due_info = t.get("due") or {}
+            due_date_str = due_info.get("date")
+            is_overdue = False
+            overdue_days = 0
+            if due_date_str:
+                try:
+                    date_part = due_date_str.split("T")[0]
+                    task_due_date = date.fromisoformat(date_part)
+                    if task_due_date < today_date:
+                        is_overdue = True
+                        overdue_days = (today_date - task_due_date).days
+                except Exception:
+                    pass
+
+            if is_overdue and overdue_days >= 7 and int(t.get("priority") or 1) < 4:
+                hidden_counts["stale"] += 1
+            elif "reference" in labels:
+                hidden_counts["reference"] += 1
+            elif "checklist_item" in labels or is_sub:
+                hidden_counts["checklist"] += 1
+            elif "routine" in labels:
+                hidden_counts["routine"] += 1
+            elif "exclude_workload" in labels:
+                hidden_counts["exclude_workload"] += 1
+
+        total = sum(hidden_counts.values())
+
+        report = (
+            f"🛡️ <b>Why Suppressed Explanation</b>\n\n"
+            f"I filtered out <b>{total} total items</b> from your active briefing counts to protect your focus and keep your workspace clean:\n\n"
+            f"• <b>{hidden_counts['reference']} Reference Notes</b> (rules, principles, or templates)\n"
+            f"• <b>{hidden_counts['checklist']} Subtasks/Checklist items</b> (nested under parent actions)\n"
+            f"• <b>{hidden_counts['routine']} Routines/Habits</b> (standard daily/weekly repeats)\n"
+            f"• <b>{hidden_counts['exclude_workload']} Excluded Workload</b> (explicitly marked to bypass count)\n"
+            f"• <b>{hidden_counts['stale']} Decayed Overdue Items</b> (overdue 7+ days without priority)\n\n"
+            f"<i>By isolating these layers, Hermes ensures you are presented with a calm, highly-actionable tomorrow preview with zero noise!</i>"
+        )
+        return report
+
+    elif cmd == "health_score":
+        active_count = len(all_tasks)
+        tomorrow_count = 0
+        debt_count = 0
+        stale_count = 0
+        reference_count = 0
+        high_priority_count = 0
+        inbox_leakage_count = 0
+        unscheduled_count = 0
+
+        from collections import defaultdict
+        name_groups = defaultdict(list)
+
+        for t in all_tasks:
+            content = str(t.get("content") or "").strip()
+            content_clean = content.lower()
+            name_groups[content_clean].append(t)
+
+            labels = [str(l).lower() for l in t.get("labels") or []]
+            priority = int(t.get("priority") or 1)
+            project_id = str(t.get("project_id") or "").strip()
+
+            is_ref = "reference" in labels
+            is_family = "family_anchor" in labels
+            is_fitness = "fitness_anchor" in labels
+
+            if priority >= 3:
+                high_priority_count += 1
+
+            if not project_id:
+                inbox_leakage_count += 1
+
+            if is_ref:
+                reference_count += 1
+
+            due_info = t.get("due") or {}
+            due_date_str = due_info.get("date")
+            if due_date_str:
+                try:
+                    date_part = due_date_str.split("T")[0]
+                    task_due_date = date.fromisoformat(date_part)
+                    if task_due_date == tomorrow_date:
+                        if not is_ref and not is_family and not is_fitness:
+                            tomorrow_count += 1
+                    elif task_due_date < today_date:
+                        overdue_days = (today_date - task_due_date).days
+                        if overdue_days >= 7 and priority < 4:
+                            stale_count += 1
+                        else:
+                            debt_count += 1
+                except Exception:
+                    pass
+            else:
+                if not is_ref:
+                    unscheduled_count += 1
+
+        duplicate_groups = [g for name, g in name_groups.items() if len(g) > 1]
+        duplicate_candidates_count = sum(len(g) for g in duplicate_groups)
+
+        deductions = 0
+        deductions += min(15, debt_count * 1)
+        deductions += min(20, stale_count * 2)
+        deductions += min(15, reference_count * 2)
+        deductions += min(15, len(duplicate_groups) * 3)
+
+        priority_inflation = max(0, high_priority_count - 10)
+        deductions += min(15, priority_inflation * 1)
+        deductions += min(10, inbox_leakage_count * 2)
+        deductions += min(10, unscheduled_count * 1)
+
+        score = max(0, 100 - deductions)
+
+        issues = []
+        if stale_count >= 5:
+            issues.append("stale backlog")
+        if priority_inflation >= 5:
+            issues.append("priority inflation")
+        if inbox_leakage_count >= 5:
+            issues.append("inbox leakage")
+
+        main_issue = " + ".join(issues) if issues else "priority inflation + stale backlog"
+
+        report = (
+            f"📊 <b>Todoist Workspace Clarity: {score}/100</b>\n\n"
+            f"• Active Tasks: {active_count}\n"
+            f"• True Scheduled Tomorrow: {tomorrow_count}\n"
+            f"• Overdue Task Debt: {debt_count}\n"
+            f"• Quiet Backlog (Stale): {stale_count}\n"
+            f"• Reference Tasks in Active List: {reference_count}\n"
+            f"• Duplicate Candidates: {duplicate_candidates_count}\n"
+            f"• High-Priority Tasks: {high_priority_count}\n"
+            f"• Inbox Leakage: {inbox_leakage_count}\n\n"
+            f"Main Issue: <b>{main_issue.capitalize()}</b>.\n"
+            f"Recommended Step: A gentle 15-minute cleanup sweep, not more planning."
+        )
+        return report
+
+    elif cmd == "entropy_check":
+        stale_list = []
+        duplicate_list = []
+        no_project_list = []
+        unscheduled_list = []
+        postponed_list = []
+
+        from collections import defaultdict
+        name_groups = defaultdict(list)
+
+        operator_state = _operator_read_state()
+        due_shifts = operator_state.get("task_due_shifts", {})
+
+        for t in all_tasks:
+            content = str(t.get("content") or "").strip()
+            content_clean = content.lower()
+            name_groups[content_clean].append(t)
+
+            project_id = str(t.get("project_id") or "").strip()
+            t_id = t.get("id")
+
+            if t_id and t_id in due_shifts and due_shifts[t_id].get("shifts", 0) >= 3:
+                postponed_list.append((t, due_shifts[t_id]["shifts"]))
+
+            if not project_id:
+                no_project_list.append(t)
+
+            due_info = t.get("due") or {}
+            due_date_str = due_info.get("date")
+            if due_date_str:
+                try:
+                    date_part = due_date_str.split("T")[0]
+                    task_due_date = date.fromisoformat(date_part)
+                    if task_due_date < today_date:
+                        overdue_days = (today_date - task_due_date).days
+                        priority = int(t.get("priority") or 1)
+                        if overdue_days >= 7 and priority < 4:
+                            stale_list.append((t, overdue_days))
+                except Exception:
+                    pass
+            else:
+                if "reference" not in [l.lower() for l in t.get("labels") or []]:
+                    unscheduled_list.append(t)
+
+        for name, group in name_groups.items():
+            if len(group) > 1:
+                duplicate_list.extend(group)
+
+        lines = ["🧹 <b>Weekly Workspace Simplicity Sweep</b>", "A gentle review to keep your lists fresh, clean, and simple:", ""]
+
+        if duplicate_list:
+            lines.append("<b>• Possible Duplicates:</b>")
+            for t in duplicate_list[:5]:
+                escaped = _escape_html(t.get("content", ""))
+                lines.append(f"  - {escaped} (ID: {t.get('id')})")
+            if len(duplicate_list) > 5:
+                lines.append(f"  ... and {len(duplicate_list) - 5} more duplicate(s)")
+            lines.append("")
+
+        if stale_list:
+            lines.append("<b>• Quiet Backlog (Overdue 7+ days):</b>")
+            for t, days in stale_list[:5]:
+                escaped = _escape_html(t.get("content", ""))
+                lines.append(f"  - {escaped} ({days} days overdue)")
+            if len(stale_list) > 5:
+                lines.append(f"  ... and {len(stale_list) - 5} more stale task(s)")
+            lines.append("")
+
+        if postponed_list:
+            lines.append("<b>• Tasks that Keep Moving (3+ reschedules):</b>")
+            for t, shifts in postponed_list[:5]:
+                escaped = _escape_html(t.get("content", ""))
+                lines.append(f"  - {escaped} (postponed {shifts} times)")
+            if len(postponed_list) > 5:
+                lines.append(f"  ... and {len(postponed_list) - 5} more postponed task(s)")
+            lines.append("")
+
+        if no_project_list:
+            lines.append("<b>• Unfiled Tasks (Inbox):</b>")
+            for t in no_project_list[:5]:
+                escaped = _escape_html(t.get("content", ""))
+                lines.append(f"  - {escaped}")
+            if len(no_project_list) > 5:
+                lines.append(f"  ... and {len(no_project_list) - 5} more inbox item(s)")
+            lines.append("")
+
+        if unscheduled_list:
+            lines.append("<b>• Tasks Waiting for a Time (No Due Date):</b>")
+            for t in unscheduled_list[:5]:
+                escaped = _escape_html(t.get("content", ""))
+                lines.append(f"  - {escaped}")
+            if len(unscheduled_list) > 5:
+                lines.append(f"  ... and {len(unscheduled_list) - 5} more unscheduled item(s)")
+            lines.append("")
+
+        if len(lines) <= 3:
+            lines.append("✨ <b>Everything is perfectly clear! Your workspace is beautifully organized.</b>")
+
+        return "\n".join(lines)
+
+    return f"Unknown command: /{cmd}"
 
 
 def _auto_cleanup_stale_tasks(tasks: List[Dict[str, Any]]) -> List[str]:
@@ -10170,7 +11939,7 @@ def _auto_cleanup_location_away(tasks: List[Dict[str, Any]]) -> List[str]:
     state = _read_json(PRESENCE_STATE_PATH, {})
     if state.get("location") != "away":
         return logs
-    
+
     for t in tasks:
         # Here we look for skip_if_away rule or metadata
         if "skip_if_away" in t.get("description", "") and t.get("due"):
@@ -10280,13 +12049,13 @@ def _get_top_high_priority_tasks(tasks: List[Dict[str, Any]], limit: int = 3) ->
 def _build_hermes_dock(location: str, local_now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     if local_now is None:
         local_now = datetime.now(timezone.utc).astimezone(_runtime_local_tz())
-    
+
     hour = local_now.hour
     location = str(location or "").strip().lower()
-    
+
     # Fetch projects map to find specific project links
     projects_map = _get_projects_map()
-    
+
     work_proj_id = None
     personal_proj_id = None
     for pid, name in projects_map.items():
@@ -10295,10 +12064,10 @@ def _build_hermes_dock(location: str, local_now: Optional[datetime] = None) -> L
             work_proj_id = pid
         if not personal_proj_id and "personal" in name_lower:
             personal_proj_id = pid
-            
+
     # Decide context
     is_work_hours = (9 <= hour < 17)
-    
+
     buttons = []
     if location == "desk" or (location != "away" and is_work_hours):
         # Desk / Work context
@@ -10316,11 +12085,11 @@ def _build_hermes_dock(location: str, local_now: Optional[datetime] = None) -> L
     else:
         # Home / Evening context
         personal_url = f"https://todoist.com/app/project/{personal_proj_id}" if personal_proj_id else "https://todoist.com/app/today"
+        buttons.append({"text": "⚓ Review Anchors", "callback_data": "po:review_anchors"})
+        buttons.append({"text": "📅 Today (Watch)", "callback_data": "po:show_list:today"})
         buttons.append({"text": "🏠 Personal App", "url": personal_url})
-        buttons.append({"text": "🏠 Personal (Watch)", "callback_data": f"po:show_list:personal:{personal_proj_id or 'none'}"})
         buttons.append({"text": "📥 Inbox App", "url": "https://todoist.com/app/inbox"})
-        buttons.append({"text": "📥 Inbox (Watch)", "callback_data": "po:show_list:inbox"})
-        
+
     return buttons
 
 
@@ -10342,7 +12111,7 @@ def _get_recent_completions() -> List[Dict[str, Any]]:
             completed = _todoist_activity_items(completed_activity_result)
     except Exception:
         pass
-    
+
     if not completed:
         try:
             token = _env("TODOIST_API_TOKEN")
@@ -10361,7 +12130,7 @@ def _get_recent_completions() -> List[Dict[str, Any]]:
                             })
         except Exception:
             pass
-            
+
     return completed
 
 
@@ -10369,14 +12138,14 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
     logs = []
     if now is None:
         now = datetime.now(timezone.utc).astimezone(_runtime_local_tz())
-    
+
     state = _operator_read_state()
     last_inbox_zero = state.get("last_inbox_zero_nudge_at")
     last_stale_project = state.get("last_stale_project_audit_at")
-    
+
     inbox_audit_due = True
     project_audit_due = True
-    
+
     if last_inbox_zero:
         try:
             last_inbox_dt = datetime.fromisoformat(last_inbox_zero)
@@ -10384,7 +12153,7 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                 inbox_audit_due = False
         except Exception:
             pass
-            
+
     if last_stale_project:
         try:
             last_proj_dt = datetime.fromisoformat(last_stale_project)
@@ -10421,7 +12190,7 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                     if age_seconds > 48 * 3600:
                         days = int(age_seconds / 86400)
                         lingering.append((t, days))
-        
+
         if lingering:
             msg_lines = [
                 "\U0001f4e5 <b>Inbox Cleanliness Nudge</b>",
@@ -10431,7 +12200,7 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                 t_id = t.get("id")
                 escaped_content = _escape_html(t.get("content", ""))
                 if t_id:
-                    msg_lines.append(f"  {idx}️⃣ <a href=\"https://todoist.com/showTask?id={t_id}\">{escaped_content}</a> (added {days} days ago)")
+                    msg_lines.append(f"  {idx}️⃣ <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a> (added {days} days ago)")
                 else:
                     msg_lines.append(f"  {idx}️⃣ {escaped_content} (added {days} days ago)")
             if len(lingering) > 3:
@@ -10439,11 +12208,11 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                     t_id = t.get("id")
                     escaped_content = _escape_html(t.get("content", ""))
                     if t_id:
-                        msg_lines.append(f"  • <a href=\"https://todoist.com/showTask?id={t_id}\">{escaped_content}</a> (added {days} days ago)")
+                        msg_lines.append(f"  • <a href=\"https://app.todoist.com/app/task/{t_id}\">{escaped_content}</a> (added {days} days ago)")
                     else:
                         msg_lines.append(f"  • {escaped_content} (added {days} days ago)")
             msg_lines.append("\nConsider moving them to appropriate projects or processing them now!")
-            
+
             sweep_buttons = []
             for idx, (t, _) in enumerate(lingering[:3], 1):
                 t_id = t.get("id")
@@ -10453,7 +12222,7 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                         {"text": f"📅 {idx}", "callback_data": f"po:task_defer:{t_id}"},
                         {"text": f"🗑️ {idx}", "callback_data": f"po:task_delete:{t_id}"}
                     ])
-            
+
             try:
                 _safe_send_telegram_message("\n".join(msg_lines), force=True, parse_mode="HTML", buttons=sweep_buttons)
                 state["last_inbox_zero_nudge_at"] = now.isoformat()
@@ -10469,15 +12238,15 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
             pid = t.get("project_id")
             if pid:
                 proj_tasks.setdefault(pid, []).append(t)
-                
+
         completions = _get_recent_completions()
-        
+
         proj_completions = {}
         for c in completions:
             pid = c.get("project_id")
             if pid:
                 proj_completions.setdefault(pid, []).append(c)
-                
+
         stale_projects = []
         for pid, name in projects_map.items():
             if name.lower() == "inbox":
@@ -10485,7 +12254,7 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
             active = proj_tasks.get(pid, [])
             if not active:
                 continue
-                
+
             oldest_age_days = 0
             for t in active:
                 created_at_str = t.get("created_at")
@@ -10494,7 +12263,7 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                     age_days = (now - created_at).total_seconds() / 86400
                     if age_days > oldest_age_days:
                         oldest_age_days = age_days
-                        
+
             if oldest_age_days > 14:
                 has_recent_completion = False
                 for c in proj_completions.get(pid, []):
@@ -10506,7 +12275,7 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                             break
                 if not has_recent_completion:
                     stale_projects.append((pid, name, int(oldest_age_days)))
-                    
+
         if stale_projects:
             msg_lines = [
                 "\U0001f5c2\ufe0f <b>Stale Project Audit Alert</b>",
@@ -10516,14 +12285,14 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                 escaped_name = _escape_html(name)
                 msg_lines.append(f"  \u2022 <a href=\"https://todoist.com/app/project/{pid}\">{escaped_name}</a> (oldest task is {days} days old)")
             msg_lines.append("\nConsider reviewing these projects to keep your workspace fresh and lightweight!")
-            
+
             project_buttons = []
             for pid, name, _ in stale_projects[:5]:
                 project_buttons.append({
                     "text": f"📁 {name}",
                     "callback_data": f"po:show_list:project:{pid}"
                 })
-            
+
             try:
                 _safe_send_telegram_message("\n".join(msg_lines), force=True, parse_mode="HTML", buttons=project_buttons)
                 state["last_stale_project_audit_at"] = now.isoformat()
@@ -10531,22 +12300,22 @@ def _run_system_cleanliness_audit(now: Optional[datetime] = None) -> List[str]:
                 logs.append("Sent Stale Project audit nudge.")
             except Exception as e:
                 logs.append(f"Failed to send Stale Project audit: {e}")
-                
+
     return logs
 
 
 def _build_mood_recommendation(mood_state: Dict[str, Any], local_now: datetime) -> str:
     mood_label = str((mood_state.get("last_mood") or {}).get("label") or "").lower()
     hour = local_now.hour
-    
+
     is_morning = (5 <= hour < 12)
     is_low_energy = mood_label in {"low_energy", "frustrated", "confused", "tired", "stressed"}
-    
+
     if is_low_energy:
         label_url = "https://todoist.com/app/label/low_energy"
-        return f"\n\n\u2616 <b>Mood Match:</b> Feeling a bit low energy? Let\'s take it easy but keep moving. Consider checking off a task with the <b><a href=\"{label_url}\">@low_energy</a></b> label."
+        return f"\n\n\u2616 <b>Mood Match:</b> Feeling low on battery? No pressure. Let's make progress easy by starting a task under the <b><a href=\"{label_url}\">@low_energy</a></b> label."
     elif is_morning or mood_label in {"focused", "motivated", "productive"}:
         label_url = "https://todoist.com/app/label/deep_work"
-        return f"\n\n\u2616 <b>Mood Match:</b> Energy is high! This is perfect for high-focus work. Consider tackling a task with the <b><a href=\"{label_url}\">@deep_work</a></b> label."
-        
+        return f"\n\n\u2616 <b>Mood Match:</b> A fresh window is open. Ready for deep focus? Tackling a task with the <b><a href=\"{label_url}\">@deep_work</a></b> label is a great momentum builder."
+
     return ""

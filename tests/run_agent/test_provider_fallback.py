@@ -7,6 +7,7 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -305,3 +306,36 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+    def test_rate_limit_reason_survives_skipped_fallback_entry(self):
+        """A skipped fallback entry must not lose the visible rate-limit cause."""
+        fbs = [
+            {"provider": "openrouter", "model": "primary-model"},
+            {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "openrouter"
+        agent.model = "primary-model"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        status_messages = []
+        agent.status_callback = lambda _event, message: status_messages.append(message)
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "deepseek/deepseek-v4-flash"),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda model, _provider: model,
+            ),
+        ):
+            ok = agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+
+        fallback_messages = [
+            message for message in status_messages if "fallback" in message.lower()
+        ]
+        assert ok is True
+        assert agent.model == "deepseek/deepseek-v4-flash"
+        assert len(fallback_messages) == 1
+        assert "Rate limited" in fallback_messages[0]

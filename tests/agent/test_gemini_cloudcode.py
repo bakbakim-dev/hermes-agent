@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import stat
 import time
 from pathlib import Path
@@ -218,11 +219,22 @@ class TestCredentialIo:
         assert loaded.project_id == "proj-abc"
 
     def test_save_uses_0600_permissions(self):
-        from agent.google_oauth import _credentials_path, save_credentials
+        from agent.google_oauth import (
+            _credentials_path,
+            credentials_file_security_status,
+            save_credentials,
+        )
 
         save_credentials(self._make())
         mode = stat.S_IMODE(_credentials_path().stat().st_mode)
-        assert mode == 0o600
+        status = credentials_file_security_status()
+        assert status["private"] is True
+        if os.name == "nt":
+            assert status["platform"] == "windows"
+            assert "not authoritative" in status["note"]
+        else:
+            assert mode == 0o600
+            assert status["platform"] == "posix"
 
     def test_disk_format_is_packed(self):
         from agent.google_oauth import _credentials_path, save_credentials
@@ -590,6 +602,18 @@ class TestBuildGeminiRequest:
             {"role": "user", "content": "hi"},
         ])
         assert "A\nB" in req["systemInstruction"]["parts"][0]["text"]
+
+    def test_multimodal_content_is_rejected_visibly(self):
+        from agent.gemini_cloudcode_adapter import build_gemini_request
+
+        with pytest.raises(ValueError, match="does not support multimodal"):
+            build_gemini_request(messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image."},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+                ],
+            }])
 
     def test_tool_call_translation(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request

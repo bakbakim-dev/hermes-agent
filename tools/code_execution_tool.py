@@ -923,6 +923,12 @@ def _execute_remote(
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
         if tz:
+            try:
+                from hermes_time import _canonicalize_timezone_name
+
+                tz = _canonicalize_timezone_name(tz)
+            except Exception:
+                pass
             env_prefix += f" TZ={tz}"
 
         # Execute the script on the remote backend
@@ -1210,6 +1216,12 @@ def execute_code(
         # into child processes.
         _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
         if _tz_name:
+            try:
+                from hermes_time import _canonicalize_timezone_name
+
+                _tz_name = _canonicalize_timezone_name(_tz_name)
+            except Exception:
+                pass
             child_env["TZ"] = _tz_name
         child_env.pop("HERMES_TIMEZONE", None)
 

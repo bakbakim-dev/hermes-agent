@@ -16,43 +16,43 @@ DEFAULT_TIMES_SEEN_THRESHOLD = 4
 
 LAW_TEMPLATES: Dict[str, List[str]] = {
     "make_it_obvious": [
-        "{title} is still open. Name the next physical action or repair the task if that is unclear.",
-        "{title} needs a clearer finish condition. Write the smallest visible next step.",
-        "{title} may be too vague. Convert it to verb + object + done condition.",
-        "Before nudging {title} again, make the next action explicit.",
+        "{title} is still open. Let's make the next step simple and clear so your brain doesn't have to guess.",
+        "{title} might need a smaller start point. What is the absolute easiest next step you can see?",
+        "If {title} feels a bit vague, let's write down one quick, simple action to begin.",
+        "Let's put {title} somewhere you can't miss it, and name one tiny step to start.",
     ],
     "make_it_attractive": [
-        "{title} has lingered. The useful move is to make it easier to start, not louder.",
-        "{title} may need a better time window or a smaller first step.",
-        "If {title} keeps sliding, redesign the task instead of carrying guilt forward.",
-        "Make {title} friction-aware: what context would make one step realistic?",
+        "{title} has been waiting a while. Let's make starting easier by pairing it with something you enjoy—like a good cup of coffee or your favorite music.",
+        "Could {title} be paired with a comfortable spot or a quiet window to make getting started feel good?",
+        "If you keep pushing {title} back, it's not a failure on your part—it just means the task might need a gentler path or a better time window.",
+        "Let's make {title} feel welcoming. What is one small, stress-free step you could take right now?",
     ],
     "make_it_easy": [
-        "Shrink {title} to a 2-minute version, or mark the blocker.",
-        "{title} may be too large as written. Pick the smallest piece that creates real progress.",
-        "For {title}, one visible step is enough for now.",
-        "Break {title} into one start action and one done condition.",
+        "Let's shrink {title} to a simple 2-minute version. Just starting is the goal—momentum will carry you from there.",
+        "{title} might feel a bit too big right now. What's the absolute smallest piece we can pick to make easy progress?",
+        "For {title}, just one visible, tiny step is more than enough for today.",
+        "Let's break {title} down into just one quick start action. No need to worry about finishing the whole thing today.",
     ],
     "make_it_satisfying": [
-        "Closing or repairing {title} would reduce Todoist noise.",
-        "{title} is still taking attention. Finish, split, defer, or delete it honestly.",
-        "A clean decision on {title} is progress: do, repair, reschedule, or remove.",
-        "{title} should leave the list clearer after the next step.",
+        "Finishing or simply simplifying {title} will help clear your mind and give you a nice, clean win.",
+        "{title} has been on your mind. Let's make a comfortable, stress-free decision: do one tiny step, reschedule it, or let it go honestly.",
+        "A clear, honest decision on {title} is wonderful progress. Let's take one tiny step or choose to let it wait.",
+        "Let's get {title} off your list so you can enjoy a lighter, clearer day.",
     ],
 }
 
 REPEATED_MISS_REPAIRS = [
-    "{title} has repeated enough to treat this as task-design evidence.",
-    "{title} may need a smaller version, a better time window, or a clearer done condition.",
-    "Before another reminder, decide whether {title} should be done, repaired, or removed.",
-    "This looks less like a motivation problem and more like a task-shape problem.",
+    "Since {title} has been rescheduled a few times, let's treat this as a sign that it's simply too big or needs a friendlier approach, not as a motivation problem.",
+    "If {title} keeps sliding, let's try a smaller version or a more comfortable time of day.",
+    "Let's take the pressure off {title}—decide if it's the right time to do a tiny piece, reschedule it with zero guilt, or remove it for now.",
+    "This isn't about willpower. Usually, if a task keeps getting pushed, it's just written in a way that feels a bit too heavy. Let's make it lighter.",
 ]
 
 ACCOUNTABILITY_NUDGES = [
-    "{title} has appeared {times_seen} times. That is a signal to repair the task before more nudges.",
-    "{title} is {days_overdue} days overdue. Choose: do one step, reschedule honestly, or rewrite it.",
-    "If {title} keeps getting pushed, split it, delegate it, or lower its active priority.",
-    "Is {title} still the right task, or should Hermes propose a cleaner version?",
+    "I've noticed {title} has popped up {times_seen} times. Let's make it simpler and easier to start before we look at it again.",
+    "{title} has been waiting for {days_overdue} days. Let's be gentle: can you do one quick step, reschedule it honestly, or change it to something smaller?",
+    "If {title} keeps getting pushed, let's break it into bite-sized pieces or set a lower priority so you don't have to worry about it.",
+    "Is {title} still something you want to do right now, or should we give it a fresh, simpler focus?",
 ]
 
 

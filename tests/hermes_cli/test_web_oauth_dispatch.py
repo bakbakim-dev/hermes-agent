@@ -25,6 +25,9 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import httpx
+import pytest
+
+pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from hermes_cli.web_server import _SESSION_TOKEN, app

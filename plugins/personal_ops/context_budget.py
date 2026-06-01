@@ -258,6 +258,153 @@ def prune_profile_recommendations(
     }
 
 
+def summarize_turn_context_contributors(*, hermes_home: Path, limit: int = 200) -> Dict[str, Any]:
+    """Summarize recent per-turn context accounting events."""
+    path = Path(hermes_home) / "turn_context_events.jsonl"
+    events: List[Dict[str, Any]] = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("type") == "turn_context_contributors":
+                events.append(record)
+
+    totals = {
+        "memory_estimated_tokens": 0,
+        "user_estimated_tokens": 0,
+        "context_prompt_estimated_tokens": 0,
+        "history_estimated_tokens": 0,
+        "last_prompt_tokens": 0,
+    }
+    tool_counts: Dict[str, int] = {}
+    max_context_pct: float | None = None
+    for event in events:
+        contributors = event.get("contributors") or {}
+        prompt_memory = contributors.get("prompt_memory") or {}
+        context_prompt = contributors.get("context_prompt") or {}
+        history = contributors.get("history") or {}
+        runtime = event.get("runtime") or {}
+        totals["memory_estimated_tokens"] += int(prompt_memory.get("memory_estimated_tokens") or 0)
+        totals["user_estimated_tokens"] += int(prompt_memory.get("user_estimated_tokens") or 0)
+        totals["context_prompt_estimated_tokens"] += int(context_prompt.get("estimated_tokens") or 0)
+        totals["history_estimated_tokens"] += int(history.get("estimated_tokens") or 0)
+        totals["last_prompt_tokens"] += int(runtime.get("last_prompt_tokens") or 0)
+        pct = runtime.get("context_pct")
+        if isinstance(pct, (int, float)):
+            max_context_pct = float(pct) if max_context_pct is None else max(max_context_pct, float(pct))
+        tools = (contributors.get("tools") or {}).get("names") or []
+        if isinstance(tools, list):
+            for name in tools:
+                if name:
+                    tool_counts[str(name)] = tool_counts.get(str(name), 0) + 1
+
+    count = len(events)
+    averages = {
+        key: round(value / count, 1) if count else 0
+        for key, value in totals.items()
+    }
+    top_tools = sorted(tool_counts.items(), key=lambda item: item[1], reverse=True)[:20]
+    recommendations: List[str] = []
+    if averages["last_prompt_tokens"] >= 12000:
+        recommendations.append("Average prompt load is high; narrow toolsets and compact memory before adding capabilities.")
+    if averages["history_estimated_tokens"] > averages["context_prompt_estimated_tokens"] * 2 and count:
+        recommendations.append("Conversation history dominates recent turns; summarize or reset stale sessions sooner.")
+    if not events:
+        recommendations.append("No turn context events found yet; send a gateway turn after this build to populate the report.")
+    return {
+        "success": True,
+        "action": "context_contributors_report",
+        "event_count": count,
+        "averages": averages,
+        "max_context_pct": max_context_pct,
+        "top_tools": [{"name": name, "count": seen} for name, seen in top_tools],
+        "recommendations": recommendations,
+        "event_path": str(path),
+    }
+
+
+def build_secret_inventory(*, hermes_home: Path, repo_path: Path) -> Dict[str, Any]:
+    """Inventory configured secret names without exposing values."""
+    candidates = [
+        Path(hermes_home) / ".env",
+        Path(repo_path) / ".env",
+        Path(repo_path) / ".env.example",
+    ]
+    rows: List[Dict[str, Any]] = []
+    risky_files: List[str] = []
+    for path in candidates:
+        if not path.exists():
+            continue
+        if path.name == ".env" and path.is_relative_to(Path(repo_path)):
+            risky_files.append(str(path))
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            if any(marker in key.upper() for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "WEBHOOK")):
+                rows.append(
+                    {
+                        "name": key,
+                        "file": str(path),
+                        "configured": bool(value.strip().strip('"').strip("'")),
+                        "value_redacted": True,
+                    }
+                )
+    return {
+        "success": True,
+        "action": "secret_inventory",
+        "secret_count": len(rows),
+        "secrets": rows,
+        "risky_files": risky_files,
+        "recommendations": [
+            "Keep real .env files out of source archives.",
+            "Prefer a secret broker or service-specific environment files for high-risk integrations.",
+            "Never write secret values into traces, capability dossiers, or Telegram replies.",
+        ],
+    }
+
+
+def build_no_agent_cron_plan() -> Dict[str, Any]:
+    """Return deterministic maintenance jobs that do not need an LLM turn."""
+    jobs = [
+        {
+            "name": "hermes-health-snapshot",
+            "cadence": "every 15 minutes",
+            "command": "hermes doctor --deep",
+            "purpose": "Detect gateway, Todoist MCP, tracing, and plugin health regressions without asking the model.",
+        },
+        {
+            "name": "context-budget-audit",
+            "cadence": "daily",
+            "command": "personal_runtime action=context_budget_audit",
+            "purpose": "Track memory, skill, and prompt-size drift.",
+        },
+        {
+            "name": "unused-tool-skill-report",
+            "cadence": "weekly",
+            "command": "personal_runtime action=context_contributors_report",
+            "purpose": "Recommend profile pruning based on observed use.",
+        },
+        {
+            "name": "secret-inventory-check",
+            "cadence": "weekly",
+            "command": "personal_runtime action=secret_inventory",
+            "purpose": "Confirm configured secret names are known and real .env files are not exported.",
+        },
+    ]
+    return {
+        "success": True,
+        "action": "no_agent_cron_plan",
+        "jobs": jobs,
+        "approval_required_to_install": True,
+        "reason": "These are deterministic checks; Hermes should run them without spending LLM context, but install still changes runtime behavior.",
+    }
+
+
 def classify_memory_destination(content: str, *, memory_type: str = "note") -> Dict[str, Any]:
     """Choose the right memory tier for a new fact/rule."""
     lowered_type = memory_type.strip().lower()

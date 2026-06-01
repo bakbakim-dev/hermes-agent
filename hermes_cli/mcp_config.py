@@ -629,8 +629,11 @@ def cmd_mcp_login(args):
     _info(f"Starting OAuth flow for '{name}'...")
 
     # Probe triggers the OAuth flow (browser redirect + callback capture).
+    # OAuth approval needs human/browser time; honor the server-level
+    # connect_timeout instead of the short probe default.
     try:
-        tools = _probe_single_server(name, server_config)
+        login_timeout = float(server_config.get("connect_timeout") or server_config.get("timeout") or 360)
+        tools = _probe_single_server(name, server_config, connect_timeout=login_timeout)
         if tools:
             _success(f"Authenticated — {len(tools)} tool(s) available")
         else:

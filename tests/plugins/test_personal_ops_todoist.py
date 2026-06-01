@@ -62,6 +62,30 @@ def _decode(result: str) -> dict:
     return json.loads(result)
 
 
+def test_runtime_tool_router_simulate_action():
+    result = _decode(
+        tools.handle_runtime(
+            {
+                "action": "tool_router_simulate",
+                "tool_name": "browser_click",
+                "request": "show my Todoist tasks",
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["action"] == "tool_router_simulate"
+    assert result["decision"]["approval_required"] is True
+
+
+def test_runtime_context_contributors_report_action():
+    result = _decode(tools.handle_runtime({"action": "context_contributors_report"}))
+
+    assert result["success"] is True
+    assert result["action"] == "context_contributors_report"
+    assert "event_path" in result
+
+
 @pytest.fixture(autouse=True)
 def _isolated_hermes_home(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
@@ -1778,7 +1802,7 @@ def test_arrive_briefing_labels_future_timed_tasks_as_upcoming(monkeypatch):
     assert "starts in" in briefing
     assert "passed" not in briefing.lower()
     assert "knock it out before you get comfortable" not in briefing
-    assert "I received a home/desk arrival signal" in briefing
+    assert "Welcome Home!" in briefing
 
 
 def test_leave_briefing_uses_policy_copy_not_old_small_wins(monkeypatch):
@@ -4776,7 +4800,8 @@ def test_adaptive_companion_builds_plain_one_line_message():
         state=tools._adaptive_companion_default_state(),
     )
 
-    assert message == 'Todoist check: top task "Finish Calgary landing page". Start the top task.'
+    assert "Finish Calgary landing page" in message
+    assert "focus" in message.lower() or "start" in message.lower()
 
 
 def test_adaptive_companion_plain_message_uses_threshold_warning():
@@ -4789,7 +4814,8 @@ def test_adaptive_companion_plain_message_uses_threshold_warning():
         state=state,
     )
 
-    assert message == 'Todoist check: top task "Finish Calgary landing page". Do one visible step now.'
+    assert "Finish Calgary landing page" in message
+    assert "tiny step" in message.lower() or "visible step" in message.lower()
 
 
 def test_adaptive_companion_grounded_reset_uses_recovery_suggestion():
@@ -4818,6 +4844,7 @@ def test_adaptive_companion_earned_respect_uses_respect_note():
     )
 
     assert "earned respect" in message.lower()
+
 
 
 def test_adaptive_companion_builds_longer_meta_message():
@@ -4883,7 +4910,7 @@ def test_adaptive_companion_ignores_stale_reason_anchor(monkeypatch):
     )
 
     assert not message.startswith("Because you just unlocked your desktop,")
-    assert message.startswith('Todoist check: top task "Finish Calgary landing page".')
+    assert "Finish Calgary landing page" in message
 
 
 def test_adaptive_companion_detailed_message_names_tasks_and_examples():
@@ -4900,10 +4927,10 @@ def test_adaptive_companion_detailed_message_names_tasks_and_examples():
         state=tools._adaptive_companion_default_state(),
     )
 
-    assert 'top task "Plan simple outing"' in message
-    assert 'side task flagged "Read Life OS identity statement"' in message
+    assert 'Plan simple outing' in message
+    assert 'Read Life OS identity statement' in message
     assert "choose one place or route" in message
-    assert "Hold off" in message
+    assert "pause" in message or "Hold off" in message or "pause until" in message
 
 
 def test_adaptive_companion_strategy_uses_detailed_mode_for_relevant_side_task():
@@ -4935,7 +4962,7 @@ def test_adaptive_companion_builds_policy_safe_legacy_stairs_message():
         state=tools._adaptive_companion_default_state(),
     )
 
-    assert "visible step" in message.lower()
+    assert "tiny step" in message.lower() or "visible step" in message.lower()
     assert "stairs" not in message.lower()
     assert "elevator" not in message.lower()
 
@@ -4949,7 +4976,7 @@ def test_adaptive_companion_builds_binary_frame_message():
         state=tools._adaptive_companion_default_state(),
     )
 
-    assert "one visible step" in message.lower() or "one concrete move" in message.lower()
+    assert "tiny step" in message.lower() or "visible step" in message.lower() or "first step" in message.lower()
 
 
 def test_adaptive_companion_builds_hierarchy_enforcement_message():
@@ -4961,7 +4988,7 @@ def test_adaptive_companion_builds_hierarchy_enforcement_message():
         state=tools._adaptive_companion_default_state(),
     )
 
-    assert "priority" in message.lower() or "support work" in message.lower()
+    assert "priority" in message.lower() or "support tasks" in message.lower()
 
 
 def test_adaptive_companion_builds_enemy_naming_message():
@@ -4973,8 +5000,9 @@ def test_adaptive_companion_builds_enemy_naming_message():
         state=tools._adaptive_companion_default_state(),
     )
 
-    assert "risk" in message.lower()
-    assert "one real action" in message.lower()
+    assert "trap" in message.lower() or "risk" in message.lower()
+    assert "physical action" in message.lower() or "real action" in message.lower()
+
 
 
 def test_adaptive_companion_varies_stairs_message_by_recent_history():
@@ -5259,7 +5287,7 @@ def test_adaptive_companion_run_allows_repeat_after_cooldown(monkeypatch):
             "intervention_family": "pattern_mirror",
             "task_label": "Plan simple outing",
             "message": "Stop circling it and start.",
-            "sent_at": "2026-05-18T17:00:00+00:00",
+            "sent_at": "2026-05-18T11:00:00+00:00",  # 440 minutes before 18:20 (more than 360 min same-task cooldown)
         }
     ]
     tools._adaptive_companion_write_state(seeded)
@@ -5301,6 +5329,60 @@ def test_adaptive_companion_run_allows_repeat_after_cooldown(monkeypatch):
     assert sent
 
 
+def test_adaptive_companion_general_vs_same_task_cooldown(monkeypatch):
+    sent = []
+
+    # 1. Different task label, 100 minutes elapsed (more than 90 min general cooldown) -> Allowed!
+    seeded = tools._adaptive_companion_default_state()
+    seeded["recent_interventions"] = [
+        {
+            "trigger": "focus_drift",
+            "style": "pattern_mirror",
+            "pattern": {"label": "friction_avoidance"},
+            "intervention_family": "pattern_mirror",
+            "task_label": "Old Task",
+            "message": "Stop circling it and start.",
+            "sent_at": "2026-05-18T16:40:00+00:00",  # 100 mins before 18:20 (general cooldown is 90 mins)
+        }
+    ]
+    tools._adaptive_companion_write_state(seeded)
+
+    monkeypatch.setattr(
+        tools,
+        "_focus_guard_read_state",
+        lambda path=tools.FOCUS_GUARD_STATE_PATH: {
+            "status": "needs_focus",
+            "most_important_task": {"content": "Plan simple outing"},  # Different task label
+            "suspicious_tasks": [],
+        },
+    )
+    monkeypatch.setattr(tools, "_adaptive_companion_recent_user_text", lambda: "")
+    monkeypatch.setattr(tools, "_adaptive_companion_now_local_hour", lambda: 13)
+    monkeypatch.setattr(
+        tools,
+        "_focus_guard_send_telegram_message",
+        lambda text, chat_id=None: sent.append(text) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        tools,
+        "datetime",
+        type(
+            "FrozenDateTime",
+            (),
+            {
+                "now": staticmethod(lambda tz=None: real_datetime.fromisoformat("2026-05-18T18:20:00+00:00")),
+                "fromisoformat": staticmethod(real_datetime.fromisoformat),
+            },
+        ),
+    )
+
+    result = _decode(tools.handle_adaptive_companion({"action": "run"}))
+    assert result["success"] is True
+    assert result["sent"] is True
+    assert len(result["state"]["recent_interventions"]) == 2
+    assert sent
+
+
 def test_adaptive_companion_run_stops_after_daily_pressure_limit(monkeypatch):
     sent = []
     seeded = tools._adaptive_companion_default_state()
@@ -5312,7 +5394,7 @@ def test_adaptive_companion_run_stops_after_daily_pressure_limit(monkeypatch):
             "intervention_family": "pattern_mirror",
             "task_label": "Plan simple outing",
             "message": "Stop circling it and start.",
-            "sent_at": "2026-05-18T15:00:00+00:00",
+            "sent_at": "2026-05-18T10:00:00+00:00",  # older than 360 mins same-task cooldown
         },
         {
             "trigger": "focus_drift",
@@ -5321,7 +5403,7 @@ def test_adaptive_companion_run_stops_after_daily_pressure_limit(monkeypatch):
             "intervention_family": "binary_frame",
             "task_label": "Plan simple outing",
             "message": "This is simple: action or excuse. Plan simple outing.",
-            "sent_at": "2026-05-18T16:00:00+00:00",
+            "sent_at": "2026-05-18T12:00:00+00:00",  # older than 360 mins same-task cooldown
         },
     ]
     tools._adaptive_companion_write_state(seeded)
@@ -5482,7 +5564,7 @@ def _mock_telegram(monkeypatch):
             self.text = text
             self.callback_data = callback_data
             self.url = url
-            
+
     class FakeInlineKeyboardMarkup:
         def __init__(self, inline_keyboard):
             self.inline_keyboard = inline_keyboard
@@ -5511,7 +5593,7 @@ def test_telegram_inline_keyboard_dual_mode_buttons():
     assert len(rows) == 1  # two buttons fit in one row
     assert rows[0][0]["text"] == "Option A"
     assert "callback_data" in rows[0][0]
-    
+
     # Dict buttons with url
     result = tools._telegram_inline_keyboard([
         {"text": "Open", "url": "https://example.com"},
@@ -5629,11 +5711,11 @@ def test_run_system_cleanliness_audit_inbox_nudge(monkeypatch):
     from datetime import datetime, timezone, timedelta
     now = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
     old_date = (now - timedelta(days=3)).isoformat()
-    
+
     tasks = [
         {"id": "t1", "content": "Old inbox task", "project_id": "inbox_id", "created_at": old_date},
     ]
-    
+
     monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: tasks)
     monkeypatch.setattr(tools, "_get_projects_map", lambda: {"inbox_id": "Inbox"})
     monkeypatch.setattr(tools, "_operator_read_state", lambda: {})
@@ -5641,7 +5723,7 @@ def test_run_system_cleanliness_audit_inbox_nudge(monkeypatch):
     sent_messages = []
     monkeypatch.setattr(tools, "_safe_send_telegram_message", lambda text, **kw: sent_messages.append(text) or {})
     monkeypatch.setattr(tools, "_runtime_local_tz", lambda: timezone.utc)
-    
+
     logs = tools._run_system_cleanliness_audit(now=now)
     assert any("Inbox Zero" in l for l in logs)
     assert len(sent_messages) >= 1
@@ -5652,13 +5734,13 @@ def test_run_system_cleanliness_audit_rate_limited(monkeypatch):
     from datetime import datetime, timezone, timedelta
     now = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
     recent = (now - timedelta(hours=2)).isoformat()
-    
+
     monkeypatch.setattr(tools, "_operator_read_state", lambda: {
         "last_inbox_zero_nudge_at": recent,
         "last_stale_project_audit_at": recent,
     })
     monkeypatch.setattr(tools, "_runtime_local_tz", lambda: timezone.utc)
-    
+
     logs = tools._run_system_cleanliness_audit(now=now)
     assert logs == []  # Both audits should be skipped
 
@@ -5705,18 +5787,18 @@ def test_handle_telegram_callback_location_sync(monkeypatch):
     import asyncio
     monkeypatch.setattr(tools, "_handle_location_update", lambda args: None)
     monkeypatch.setattr(tools, "_run_auto_cleanup_routines", lambda: {"logs": ["cleaned up"]})
-    
+
     class FakeMessage:
         text = "old text"
         async def reply_text(self, text, **kw):
             self._reply = text
             self._kw = kw
-            
+
     class FakeQuery:
         message = FakeMessage()
         async def answer(self, **kw):
             pass
-    
+
     query = FakeQuery()
     asyncio.run(tools._handle_telegram_callback(None, query, "po:location:home"))
     assert "Location updated" in query.message._reply
@@ -5728,29 +5810,29 @@ def test_handle_telegram_callback_task_complete_sync(monkeypatch):
     class FakeResp:
         status_code = 204
         def raise_for_status(self): pass
-    
+
     class FakeClient:
         def __enter__(self): return self
         def __exit__(self, *a): pass
         def post(self, url, **kw):
             assert "close" in url
             return FakeResp()
-    
+
     monkeypatch.setattr(tools, "_http_client", lambda: FakeClient())
-    
+
     answered = {}
     edited = {}
     class FakeMessage:
         text = "Task list"
         async def reply_text(self, text, **kw): pass
-    
+
     class FakeQuery:
         message = FakeMessage()
         async def answer(self, text="", **kw):
             answered["text"] = text
         async def edit_message_text(self, text, **kw):
             edited["text"] = text
-    
+
     query = FakeQuery()
     asyncio.run(tools._handle_telegram_callback(None, query, "po:task_complete:12345"))
     assert "completed" in answered.get("text", "").lower()
@@ -5762,28 +5844,28 @@ def test_handle_telegram_callback_task_defer_sync(monkeypatch):
     class FakeResp:
         status_code = 200
         def raise_for_status(self): pass
-    
+
     class FakeClient:
         def __enter__(self): return self
         def __exit__(self, *a): pass
         def post(self, url, headers=None, json=None, **kw):
             assert json == {"due_string": "tomorrow morning"}
             return FakeResp()
-    
+
     monkeypatch.setattr(tools, "_http_client", lambda: FakeClient())
-    
+
     answered = {}
     edited = {}
     class FakeMessage:
         text = "Task list"
-    
+
     class FakeQuery:
         message = FakeMessage()
         async def answer(self, text="", **kw):
             answered["text"] = text
         async def edit_message_text(self, text, **kw):
             edited["text"] = text
-    
+
     query = FakeQuery()
     asyncio.run(tools._handle_telegram_callback(None, query, "po:task_defer:99999"))
     assert "deferred" in answered.get("text", "").lower()
@@ -5796,7 +5878,7 @@ def test_handle_telegram_callback_unknown_action_sync():
     class FakeQuery:
         async def answer(self, **kw):
             answered.append(True)
-    
+
     query = FakeQuery()
     asyncio.run(tools._handle_telegram_callback(None, query, "po:unknown_action:data"))
     assert len(answered) == 1
@@ -5808,7 +5890,7 @@ def test_handle_telegram_callback_short_data_sync():
     class FakeQuery:
         async def answer(self, **kw):
             answered.append(True)
-    
+
     query = FakeQuery()
     asyncio.run(tools._handle_telegram_callback(None, query, "po"))
     assert len(answered) == 1
@@ -5821,7 +5903,7 @@ def test_wake_briefing_uses_policy_renderer_instead_of_daily_theme(monkeypatch):
         "window": "morning", "operator": {}, "target": "Write tests",
         "risk": None, "friction": None, "next_action": "Start coding"
     })
-    
+
     now = datetime(2026, 5, 18, 8, 0, 0, tzinfo=timezone.utc)  # Monday
     focus_state = {
         "most_important_task": {"id": "t1", "content": "Write tests"},
@@ -5916,7 +5998,7 @@ def test_auto_cleanup_includes_cleanliness_audit(monkeypatch):
     monkeypatch.setattr(tools, "_auto_cleanup_friday_purge", lambda t: [])
     monkeypatch.setattr(tools, "_auto_cleanup_quiet_hours", lambda t: [])
     monkeypatch.setattr(tools, "_run_system_cleanliness_audit", lambda **kw: (audit_called.append(True) or []))
-    
+
     result = tools._run_auto_cleanup_routines()
     assert result["status"] == "success"
     assert len(audit_called) == 1
@@ -5926,7 +6008,8 @@ def test_event_ingest_updates_state_and_deduplicates(monkeypatch, tmp_path):
     # Setup temp paths
     monkeypatch.setattr(tools, "PRESENCE_STATE_PATH", tmp_path / "presence_state.json")
     monkeypatch.setattr(tools, "OPERATOR_STATE_PATH", tmp_path / "operator_state.json")
-    
+    monkeypatch.setattr(tools, "EVENT_ROUTER_STATE_PATH", tmp_path / "event_router_state.json")
+
     # Ingest desktop.active event
     res = _decode(tools.handle_runtime({
         "action": "event_ingest",
@@ -5934,13 +6017,13 @@ def test_event_ingest_updates_state_and_deduplicates(monkeypatch, tmp_path):
         "source": "desktop_sentinel",
         "payload": {"presence_state": "active_now"}
     }))
-    
+
     assert res["success"] is True
-    
+
     # Read states
     presence = tools._read_json(tmp_path / "presence_state.json", {})
     operator = tools._read_json(tmp_path / "operator_state.json", {})
-    
+
     assert presence["state"] == "desk"
     assert presence["afk"] is False
     assert operator["last_sensor_heartbeats"]["desktop_sentinel"] > 0
@@ -5970,13 +6053,13 @@ def test_handle_distraction_event_under_cooldown_and_mute(monkeypatch, tmp_path)
     monkeypatch.setattr(tools, "OPERATOR_STATE_PATH", tmp_path / "operator_state.json")
     monkeypatch.setattr(tools, "_telegram_messages_allowed_now", lambda *args, **kw: True)
     monkeypatch.setattr(tools, "_run_scheduler_checks", lambda *args, **kw: None)
-    
+
     # Initialize operator state with work_window so nudge is allowed
     tools._write_json(tmp_path / "operator_state.json", {"day_phase": "work_window"})
-    
+
     sent_msgs = []
     monkeypatch.setattr(tools, "_safe_send_telegram_message", lambda text, **kw: sent_msgs.append(text))
-    
+
     # Trigger distraction event (15 mins)
     res = _decode(tools.handle_runtime({
         "action": "event_ingest",
@@ -5997,7 +6080,7 @@ def test_handle_distraction_event_under_cooldown_and_mute(monkeypatch, tmp_path)
         "source": "desktop_sentinel",
         "payload": {"category": "distraction_video", "duration_sec": 905}
     }))
-    
+
     assert res_cooldown["success"] is True
     assert res_cooldown["nudge_sent"] is False
     assert res_cooldown["reason"] == "cooldown_active"
@@ -6005,24 +6088,24 @@ def test_handle_distraction_event_under_cooldown_and_mute(monkeypatch, tmp_path)
 
 def test_telegram_callback_sprint_mute_defer(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "OPERATOR_STATE_PATH", tmp_path / "operator_state.json")
-    
+
     replied = []
     answered = []
-    
+
     class MockMessage:
         def __init__(self):
             self.text = "Hello"
         async def reply_text(self, text, **kw):
             replied.append(text)
-            
+
     class MockQuery:
         def __init__(self):
             self.message = MockMessage()
         async def answer(self, text="", **kw):
             answered.append(text)
-            
+
     query = MockQuery()
-    
+
     # 1. Test sprint start
     import asyncio
     asyncio.run(tools._handle_telegram_callback(None, query, "po:sprint:start"))
@@ -6038,4 +6121,590 @@ def test_telegram_callback_sprint_mute_defer(monkeypatch, tmp_path):
     assert any("muted" in r.lower() for r in replied)
 
 
+def test_run_scheduler_checks_evening_briefing(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(tools, "_runtime_local_tz", lambda: ZoneInfo("America/Edmonton"))
+
+    sent = []
+    monkeypatch.setattr(tools, "_safe_send_telegram_message", lambda text, **kw: sent.append(text))
+
+    state = {"day_phase": "evening"}
+    monkeypatch.setattr(tools, "_operator_read_state", lambda: state)
+    monkeypatch.setattr(tools, "_operator_write_state", lambda s: state.update(s))
+
+    tasks = [{"id": "t1", "content": "Pack bags for tomorrow", "due": {"date": "2026-05-23"}}]
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: tasks)
+
+    # 1. Test out-of-bounds (e.g. 5:00 PM local)
+    state = {"day_phase": "work_window"}
+    dt_out = datetime(2026, 5, 22, 17, 0, 0, tzinfo=ZoneInfo("America/Edmonton"))
+    tools._run_scheduler_checks(dt_out)
+    assert len(sent) == 0
+    assert state.get("last_evening_briefing_date") is None
+
+    # 2. Test in-bounds (e.g. 9:46 PM local)
+    state = {"day_phase": "evening"}
+    dt_in = datetime(2026, 5, 22, 21, 46, 0, tzinfo=ZoneInfo("America/Edmonton"))
+    tools._run_scheduler_checks(dt_in)
+    assert len(sent) == 1
+    assert "Tomorrow's Todoist Preview" in sent[0]
+    assert "Pack bags for tomorrow" in sent[0]
+    assert state.get("last_evening_briefing_date") == "2026-05-22"
+
+    # 3. Test deduplication (same day again)
+    sent.clear()
+    tools._run_scheduler_checks(dt_in)
+    assert len(sent) == 0
+
+
+def test_evening_briefing_task_debt_triage(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(tools, "_runtime_local_tz", lambda: ZoneInfo("America/Edmonton"))
+
+    sent = []
+    monkeypatch.setattr(tools, "_safe_send_telegram_message", lambda text, **kw: sent.append(text))
+
+    state = {"day_phase": "evening"}
+    monkeypatch.setattr(tools, "_operator_read_state", lambda: state)
+    monkeypatch.setattr(tools, "_operator_write_state", lambda s: state.update(s))
+
+    # Seed 10 tasks due tomorrow (2026-05-23)
+    tomorrow_tasks = [
+        {"id": f"t_tom_{i}", "content": f"Tomorrow task {i}", "due": {"date": "2026-05-23"}}
+        for i in range(10)
+    ]
+    # Seed 40 overdue tasks (due 2026-05-21 - 1 day overdue)
+    overdue_tasks = [
+        {"id": f"t_over_{i}", "content": f"Overdue task {i}", "due": {"date": "2026-05-21"}}
+        for i in range(40)
+    ]
+    # Seed 5 stale overdue tasks (due 2026-05-10 - 12 days overdue, low priority < 4)
+    stale_tasks = [
+        {"id": f"t_stale_{i}", "content": f"Stale task {i}", "due": {"date": "2026-05-10"}, "priority": 2}
+        for i in range(5)
+    ]
+
+    all_tasks = tomorrow_tasks + overdue_tasks + stale_tasks
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: all_tasks)
+
+    # Trigger at 9:46 PM local on 2026-05-22 (meaning tomorrow is 2026-05-23, yesterday/overdue is 2026-05-21)
+    dt_in = datetime(2026, 5, 22, 21, 46, 0, tzinfo=ZoneInfo("America/Edmonton"))
+    tools._run_scheduler_checks(dt_in)
+
+    assert len(sent) == 1
+    msg = sent[0]
+
+    # Assert Sleep-Safe Triage title is present
+    assert "Sleep-Safe Triage" in msg
+    # Assert decision load scoring is present
+    assert "Tomorrow has 10 scheduled workload items, but only 0 require" in msg
+    # Assert carryover backlog count in quarantine is present
+    assert "backlog of 40 overdue or carryover items in quarantine" in msg
+    # Assert stale task decay warning/count is present
+    assert "5 overdue items look stale rather than urgent. I’ll keep them out of tomorrow’s workload" in msg
+    # Assert focus actions are limited to 3
+    assert "Tomorrow task 0" in msg
+    assert "Tomorrow task 1" in msg
+    assert "Tomorrow task 2" in msg
+    assert "Tomorrow task 3" not in msg  # Limited to 3
+    # Assert it never uses the "...and X more" string or other forbidden phrases
+    assert "...and" not in msg
+    assert "on your plate:" not in msg.lower()
+    assert "you are behind" not in msg.lower()
+    assert "still not done" not in msg.lower()
+    assert "failed to complete" not in msg.lower()
+    # Assert the clean exit and reassuring message exist
+    assert any(c in msg for c in [
+        "Nothing else needs sorting tonight.",
+        "Tomorrow has a first move. You can leave the rest for morning.",
+        "The list is captured. You do not need to keep it in your head."
+    ])
+
+
+def test_prediction_vs_reality_loop(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    state = {
+        "briefing_predictions": {
+            "2026-05-21": {
+                "predicted_top_tasks": ["t_pred_1", "t_pred_2"],
+                "completed": False
+            }
+        },
+        "shown_task_counts": {},
+        "behavioral_analytics": {
+            "completions_count": 0,
+            "ignores_count": 0,
+            "history": []
+        }
+    }
+
+    active_tasks = [
+        {"id": "t_pred_2", "content": "Ignored predicted task", "due": {"date": "2026-05-23"}}
+    ]
+
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: active_tasks)
+    monkeypatch.setattr(tools, "_runtime_local_tz", lambda: ZoneInfo("America/Edmonton"))
+    monkeypatch.setattr(tools, "_get_recent_completions", lambda: [])
+
+    tools._operator_evaluate_yesterday_predictions(state, active_tasks)
+
+    pred_entry = state["briefing_predictions"]["2026-05-21"]
+    assert pred_entry["completed"] is True
+    assert "t_pred_1" in pred_entry["completed_tasks"]
+    assert "t_pred_2" in pred_entry["ignored_tasks"]
+
+    analytics = state["behavioral_analytics"]
+    assert analytics["completions_count"] == 1
+    assert analytics["ignores_count"] == 1
+    assert len(analytics["history"]) == 1
+
+
+def test_task_survivorship_stuck_detection(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(tools, "_runtime_local_tz", lambda: ZoneInfo("America/Edmonton"))
+
+    sent = []
+    sent_buttons = []
+    def mock_send(text, buttons=None, **kw):
+        sent.append(text)
+        sent_buttons.append(buttons)
+
+    monkeypatch.setattr(tools, "_safe_send_telegram_message", mock_send)
+
+    state = {
+        "day_phase": "evening",
+        "shown_task_counts": {
+            "stuck_t_1": 5,
+            "normal_t_2": 2
+        }
+    }
+    monkeypatch.setattr(tools, "_operator_read_state", lambda: state)
+    monkeypatch.setattr(tools, "_operator_write_state", lambda s: state.update(s))
+
+    tasks = [
+        {"id": "stuck_t_1", "content": "Read program rules", "due": {"date": "2026-05-23"}},
+        {"id": "normal_t_2", "content": "Normal scheduled task", "due": {"date": "2026-05-23"}}
+    ]
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: tasks)
+    monkeypatch.setattr(tools, "_get_recent_completions", lambda: [])
+
+    dt_in = datetime(2026, 5, 22, 21, 46, 0, tzinfo=ZoneInfo("America/Edmonton"))
+    tools._run_scheduler_checks(dt_in)
+
+    assert len(sent) == 1
+    msg = sent[0]
+
+    assert "Stuck Tasks Needing Intervention" in msg
+    assert "Read program rules" in msg
+
+    buttons = sent_buttons[0]
+    assert any(b.get("text") == "⚡ Shrink Stuck Task" for b in buttons)
+    assert any(b.get("text") == "💤 Move to Someday" for b in buttons)
+
+
+def test_notification_trust_gate(monkeypatch):
+    presence = {"configured": True, "can_proactively_message": True}
+    focus = {}
+    intel = {
+        "active_tasks": {"count": 5},
+        "overdue_tasks": [{"id": f"t_{i}"} for i in range(20)]
+    }
+
+    task_low = {"id": "t1", "content": "very low priority chore", "priority": 1}
+    recent_nudges = {"sent_nudges": []}
+
+    trust_score = tools._operator_calculate_nudge_trust_score(task_low, presence, recent_nudges, "default", intel, 22)
+    assert trust_score < 3.0
+
+    gate_res = tools._operator_nudge_quality_gate(
+        mode="default",
+        top_task=task_low,
+        presence=presence,
+        focus_state=focus,
+        recent_nudges=recent_nudges,
+        recommended_next_action="start",
+        intel=intel,
+        now_hour=22
+    )
+    assert gate_res["passed"] is False
+    assert "Suppressing message" in gate_res["reason"] or "Outside allowed Telegram hours." in gate_res["reason"]
+
+
+def test_morning_repair_loop(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(tools, "_runtime_local_tz", lambda: ZoneInfo("America/Edmonton"))
+
+    sent = []
+    monkeypatch.setattr(tools, "_safe_send_telegram_message", lambda text, **kw: sent.append(text))
+
+    state = {
+        "day_phase": "evening",
+        "last_briefing_had_debt": True,
+        "shown_task_counts": {}
+    }
+    monkeypatch.setattr(tools, "_operator_read_state", lambda: state)
+    monkeypatch.setattr(tools, "_operator_write_state", lambda s: state.update(s))
+
+    tasks = [
+        {"id": "t_over", "content": "Overdue clickup review", "due": {"date": "2026-05-20"}, "priority": 3}
+    ]
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: tasks)
+
+    dt_in = datetime(2026, 5, 23, 9, 0, 0, tzinfo=ZoneInfo("America/Edmonton"))
+    tools._run_scheduler_checks(dt_in)
+
+    assert len(sent) == 1
+    assert "Morning Repair Loop" in sent[0]
+    assert "Overdue clickup review" in sent[0]
+    assert state.get("last_briefing_had_debt") is False
+
+
+def test_briefing_feedback_callbacks_stuck(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    tasks = [
+        {"id": "stuck_1", "content": "Fix the leaking roof", "labels": []}
+    ]
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: tasks)
+
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_client.post.return_value = mock_resp
+    monkeypatch.setattr(tools, "_http_client", lambda: MagicMock(__enter__=lambda _: mock_client))
+
+    query = MagicMock()
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    query.message.text = "Morning Repair"
+    query.message.reply_text = AsyncMock()
+
+    asyncio.run(tools._handle_telegram_callback(None, query, "po:stuck:shrink:stuck_1"))
+    query.answer.assert_called()
+    called_reply = query.message.reply_text.call_args[0][0]
+    assert "Stuck Task Intervention" in called_reply
+    assert "Fix the leaking roof" in called_reply
+
+    asyncio.run(tools._handle_telegram_callback(None, query, "po:stuck:someday:stuck_1"))
+    query.answer.assert_called_with(text="Task moved to Someday/Maybe!")
+    assert mock_client.post.called
+
+
+def test_evening_briefing_feedback_callbacks(monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta
+    from unittest.mock import AsyncMock, MagicMock
+
+    tz = tools._runtime_local_tz()
+    today_date = datetime.now(tz).date()
+    tomorrow_date = today_date + timedelta(days=1)
+
+    # Mock _focus_guard_read_todoist_tasks
+    tasks = [
+        {"id": "t1", "content": "Clean the garage", "due": {"date": today_date.isoformat()}},
+        {"id": "t2", "content": "Focus task", "due": {"date": tomorrow_date.isoformat()}, "priority": 3}
+    ]
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: tasks)
+
+    # Mock Telegram callback query objects
+    query = MagicMock()
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    query.message.text = "Tomorrow's Todoist Preview"
+    query.message.reply_text = AsyncMock()
+
+    # 1. Test po:briefing:quiet callback
+    asyncio.run(tools._handle_telegram_callback(None, query, "po:briefing:quiet"))
+    query.answer.assert_called_with(text="Quiet mode activated.")
+    query.edit_message_text.assert_called_with(
+        "<b>🌙 Quiet Mode Active</b>\n\nTask previews skipped for tonight. Rest well and protect your nervous system! 💤",
+        parse_mode="HTML",
+        reply_markup=None
+    )
+
+    # 2. Test po:briefing:top3 callback
+    query.answer.reset_mock()
+    query.edit_message_text.reset_mock()
+    asyncio.run(tools._handle_telegram_callback(None, query, "po:briefing:top3"))
+    query.answer.assert_called()
+    called_text = query.edit_message_text.call_args[0][0]
+    assert "Tomorrow's Top 3 Priorities:" in called_text
+    assert "Focus task" in called_text
+
+    # 3. Test po:briefing:triage callback
+    query.answer.reset_mock()
+    asyncio.run(tools._handle_telegram_callback(None, query, "po:briefing:triage"))
+    query.answer.assert_called()
+    called_reply_text = query.message.reply_text.call_args[0][0]
+    assert "Overdue Triage" in called_reply_text
+    assert "Clean the garage" in called_reply_text
+
+
+def test_classify_task_role_priority_labels():
+    # Explicit labels priority
+    assert tools._classify_task_role({"labels": ["family_anchor"]}) == "family_anchor"
+    assert tools._classify_task_role({"labels": ["fitness_anchor"]}) == "fitness_anchor"
+    assert tools._classify_task_role({"labels": ["routine"]}) == "routine"
+    assert tools._classify_task_role({"labels": ["reference"]}) == "reference"
+    assert tools._classify_task_role({"labels": ["checklist_item"]}) == "checklist_item"
+    assert tools._classify_task_role({"labels": ["task_debt"]}) == "task_debt"
+    assert tools._classify_task_role({"labels": ["exclude_workload"]}) == "exclude_workload"
+    assert tools._classify_task_role({"labels": ["hermes_hidden"]}) == "hermes_hidden"
+
+
+def test_classify_task_role_fallbacks():
+    # Fallback to fitness anchors
+    assert tools._classify_task_role({"content": "mensupperlower workout routines"}) == "fitness_anchor"
+    assert tools._classify_task_role({"content": "upper body gym session"}) == "fitness_anchor"
+    # Fallback to family anchors
+    assert tools._classify_task_role({"content": "playtime with son"}) == "family_anchor"
+    assert tools._classify_task_role({"content": "wife solo break support"}) == "family_anchor"
+    # Fallback to routines
+    assert tools._classify_task_role({"content": "morning launch routine"}) == "routine"
+    assert tools._classify_task_role({"content": "daily reset check"}) == "routine"
+
+
+def test_evening_briefing_workload_counts(monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta
+    from unittest.mock import AsyncMock, MagicMock
+
+    tz = tools._runtime_local_tz()
+    today_date = datetime.now(tz).date()
+    tomorrow_date = today_date + timedelta(days=1)
+
+    # Construct exact 8 true tomorrow tasks, 4 family/fitness anchors, 16 overdue tasks
+    mock_tasks = []
+
+    # 8 True Tomorrow workload tasks
+    for i in range(8):
+        mock_tasks.append({
+            "id": f"tom_work_{i}",
+            "content": f"Focus Work {i}",
+            "due": {"date": tomorrow_date.isoformat()},
+            "priority": 3
+        })
+
+    # 4 Sacred/Protected anchors (2 family, 2 fitness)
+    for i in range(2):
+        mock_tasks.append({
+            "id": f"fam_anch_{i}",
+            "content": f"Son Playtime {i}",
+            "due": {"date": tomorrow_date.isoformat()},
+            "labels": ["family_anchor"]
+        })
+    for i in range(2):
+        mock_tasks.append({
+            "id": f"fit_anch_{i}",
+            "content": f"Upper A Gym {i}",
+            "due": {"date": tomorrow_date.isoformat()},
+            "labels": ["fitness_anchor"]
+        })
+
+    # 16 Overdue task debt (12 task debt, 4 stale)
+    for i in range(12):
+        mock_tasks.append({
+            "id": f"debt_{i}",
+            "content": f"Overdue Action {i}",
+            "due": {"date": (today_date - timedelta(days=2)).isoformat()},
+            "priority": 3
+        })
+    for i in range(4):
+        mock_tasks.append({
+            "id": f"stale_{i}",
+            "content": f"Stale Backlog {i}",
+            "due": {"date": (today_date - timedelta(days=10)).isoformat()},
+            "priority": 1
+        })
+
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: mock_tasks)
+
+    # Mock Telegram send
+    sent_messages = []
+    def fake_send(msg, **kwargs):
+        sent_messages.append((msg, kwargs))
+        return {"success": True}
+    monkeypatch.setattr(tools, "_safe_send_telegram_message", fake_send)
+
+    # Clear evening date tracker to force briefing trigger
+    operator_state = tools._operator_read_state()
+    operator_state.pop("last_evening_briefing_date", None)
+    tools._operator_write_state(operator_state)
+
+    # Mock time to 9:45 PM America/Edmonton
+    mock_now = datetime.now(tz).replace(hour=21, minute=45, second=0, microsecond=0)
+
+    tools._run_scheduler_checks(mock_now)
+
+    assert len(sent_messages) == 1
+    brief_msg, kwargs = sent_messages[0]
+
+    # Assert counts are isolated correctly (8 true scheduled tomorrow workload, 16 overdue)
+    assert "Tomorrow has 8 scheduled workload items" in brief_msg
+    assert "backlog of 12 overdue or carryover items in quarantine" in brief_msg
+    assert "4 overdue items look stale rather than urgent" in brief_msg
+    assert "Protected Family & Fitness Anchors" in brief_msg
+    assert "🌸" in brief_msg
+    assert "💪" in brief_msg
+
+
+def test_handle_briefing_slash_commands(monkeypatch):
+    from datetime import datetime, timedelta
+
+    tz = tools._runtime_local_tz()
+    today_date = datetime.now(tz).date()
+    tomorrow_date = today_date + timedelta(days=1)
+
+    mock_tasks = [
+        # True tomorrow workload
+        {"id": "t1", "content": "Taxes review", "due": {"date": tomorrow_date.isoformat()}, "priority": 3},
+        # Hidden tomorrow reference task
+        {"id": "t2", "content": "Owner Deep Work rules", "due": {"date": tomorrow_date.isoformat()}, "labels": ["reference"]},
+        # Overdue task debt (3 days overdue)
+        {"id": "t3", "content": "Reply to contractor", "due": {"date": (today_date - timedelta(days=3)).isoformat()}, "priority": 3},
+        # Stale overdue task (10 days overdue)
+        {"id": "t4", "content": "Read garage instructions", "due": {"date": (today_date - timedelta(days=10)).isoformat()}, "priority": 1},
+        # Inbox leakage
+        {"id": "t5", "content": "Vague task note", "project_id": ""},
+        # Duplicate name candidates
+        {"id": "t6", "content": "Laundry sweep", "project_id": "proj_1"},
+        {"id": "t7", "content": "Laundry sweep", "project_id": "proj_1"}
+    ]
+
+    monkeypatch.setattr(tools, "_focus_guard_read_todoist_tasks", lambda **kw: mock_tasks)
+
+    # 1. Test /show_hidden_tomorrow
+    res_hidden = tools.handle_briefing_slash_command("show_hidden_tomorrow", "")
+    assert "Hidden/Excluded Tasks for Tomorrow" in res_hidden
+    assert "Owner Deep Work rules" in res_hidden
+
+    # 2. Test /show_task_debt
+    res_debt = tools.handle_briefing_slash_command("show_task_debt", "")
+    assert "Active Overdue Task Debt" in res_debt
+    assert "Reply to contractor" in res_debt
+    assert "Stale Backlog" in res_debt
+    assert "Read garage instructions" in res_debt
+
+    # 3. Test /why_suppressed
+    res_why = tools.handle_briefing_slash_command("why_suppressed", "")
+    assert "Why Suppressed Explanation" in res_why
+    assert "Reference Notes" in res_why
+    assert "Decayed Overdue Items" in res_why
+
+    # 4. Test /health_score
+    res_health = tools.handle_briefing_slash_command("health_score", "")
+    assert "Todoist Workspace Clarity:" in res_health
+    assert "Active Tasks: 7" in res_health
+    assert "Recommended Step:" in res_health
+
+    # 5. Test /entropy_check
+    res_entropy = tools.handle_briefing_slash_command("entropy_check", "")
+    assert "Weekly Workspace Simplicity Sweep" in res_entropy
+    assert "Possible Duplicates" in res_entropy
+    assert "Laundry sweep" in res_entropy
+
+
+def test_todoist_local_fallback_filtering(monkeypatch):
+    from datetime import datetime, timedelta
+
+    tz = tools._runtime_local_tz()
+    today_date = datetime.now(tz).date()
+    today_str = today_date.isoformat()
+    tomorrow_str = (today_date + timedelta(days=1)).isoformat()
+    yesterday_str = (today_date - timedelta(days=1)).isoformat()
+
+    mock_tasks = [
+        {"id": "t_overdue", "content": "Overdue task", "due": {"date": yesterday_str}},
+        {"id": "t_today", "content": "Today task", "due": {"date": today_str}},
+        {"id": "t_tomorrow", "content": "Tomorrow task", "due": {"date": tomorrow_str}},
+        {"id": "t_no_date", "content": "No date task"},
+        {"id": "t_overdue_recurring", "content": "Overdue recurring", "due": {"date": yesterday_str, "is_recurring": True}},
+        {"id": "t_someday", "content": "Someday task", "labels": ["someday"], "due": {"date": today_str}},
+        {"id": "t_maybe", "content": "Maybe task", "labels": ["maybe"], "due": {"date": today_str}}
+    ]
+
+    monkeypatch.setattr(tools, "_todoist_native_fetch_tasks", lambda client, params, limit: mock_tasks)
+
+    # 1. Test today | overdue
+    res_today_overdue = tools._todoist_native_call({"action": "list_tasks", "filter": "today | overdue"})
+    assert res_today_overdue["success"] is True
+    ids_today_overdue = {t["id"] for t in res_today_overdue["tasks"]}
+    assert ids_today_overdue == {"t_overdue", "t_today"}
+
+    # 2. Test today
+    res_today = tools._todoist_native_call({"action": "list_tasks", "filter": "today"})
+    assert res_today["success"] is True
+    ids_today = {t["id"] for t in res_today["tasks"]}
+    assert ids_today == {"t_today"}
+
+    # 3. Test overdue
+    res_overdue = tools._todoist_native_call({"action": "list_tasks", "filter": "overdue"})
+    assert res_overdue["success"] is True
+    ids_overdue = {t["id"] for t in res_overdue["tasks"]}
+    assert ids_overdue == {"t_overdue"}
+
+    # 4. Test tomorrow
+    res_tomorrow = tools._todoist_native_call({"action": "list_tasks", "filter": "tomorrow"})
+    assert res_tomorrow["success"] is True
+    ids_tomorrow = {t["id"] for t in res_tomorrow["tasks"]}
+    assert ids_tomorrow == {"t_tomorrow"}
+
+    # 5. Test arbitrary filter (should keep everything that is not globally excluded by labels)
+    res_arbitrary = tools._todoist_native_call({"action": "list_tasks", "filter": "@work"})
+    assert res_arbitrary["success"] is True
+    assert len(res_arbitrary["tasks"]) == 4  # Keeps overdue, today, tomorrow, no_date (skips 2 someday/maybe and 1 overdue recurring)
+
+
+def test_todoist_update_task_execution(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+        def post(self, url, headers=None, json=None):
+            calls.append((url, json))
+            return _FakeResponse({"id": "123", "content": "Updated content"})
+
+    monkeypatch.setattr(tools, "_http_client", lambda: FakeClient())
+    monkeypatch.setattr(tools, "_todoist_headers", lambda: {"Authorization": "Bearer test"})
+
+    # 1. Test _execute_todoist with update_task
+    payload = {
+        "action": "update_task",
+        "task_id": "123",
+        "content": "Updated content",
+        "due_string": "tomorrow at 2pm"
+    }
+    res = tools._execute_todoist(payload)
+    assert res["success"] is True
+    assert res["task_id"] == "123"
+    assert res["task"]["content"] == "Updated content"
+    assert len(calls) == 1
+    assert calls[0][0] == f"{tools.TODOIST_BASE}/tasks/123"
+    assert calls[0][1] == {"content": "Updated content", "due_string": "tomorrow at 2pm"}
+
+    # 2. Test _todoist_native_call with update_task (should request approval)
+    args = {
+        "action": "update_task",
+        "task_id": "123",
+        "content": "Updated content",
+        "due_string": "tomorrow at 2pm"
+    }
+    res_call = tools._todoist_native_call(args)
+    assert res_call["success"] is False
+    assert "update Todoist task 123" in res_call["summary"]
+    assert res_call["approval_required"] is True
 

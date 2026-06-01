@@ -63,7 +63,7 @@ _ROLE_MAP_OPENAI_TO_GEMINI = {
 
 
 def _coerce_content_to_text(content: Any) -> str:
-    """OpenAI content may be str or a list of parts; reduce to plain text."""
+    """OpenAI content may be str or text parts; reject unsupported media."""
     if content is None:
         return ""
     if isinstance(content, str):
@@ -76,9 +76,12 @@ def _coerce_content_to_text(content: Any) -> str:
             elif isinstance(p, dict):
                 if p.get("type") == "text" and isinstance(p.get("text"), str):
                     pieces.append(p["text"])
-                # Multimodal (image_url, etc.) — stub for now; log and skip
+                # This adapter is text-only until media parts are mapped explicitly.
                 elif p.get("type") in {"image_url", "input_audio"}:
-                    logger.debug("Dropping multimodal part (not yet supported): %s", p.get("type"))
+                    raise ValueError(
+                        "Gemini Cloud Code adapter does not support multimodal "
+                        f"content part type: {p.get('type')}"
+                    )
         return "\n".join(pieces)
     return str(content)
 

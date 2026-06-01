@@ -20,7 +20,11 @@ from .temp_personal_ops_tools import (
     on_post_approval_response,
     on_pre_approval_request,
     handle_location_slash_command,
+    handle_briefing_slash_command,
 )
+from .gym_attendance import handle_gym_slash_command
+from .proactive_routing import proactive_personal_query_hook
+from .tool_router import pre_tool_call_router
 
 
 def register(ctx) -> None:
@@ -40,8 +44,41 @@ def register(ctx) -> None:
     ctx.register_tool("personal_security", "personal-ops", SECURITY_SCHEMA, handle_security, emoji="🛡️")
     ctx.register_hook("pre_approval_request", on_pre_approval_request)
     ctx.register_hook("post_approval_response", on_post_approval_response)
+    ctx.register_hook("pre_llm_call", proactive_personal_query_hook)
+    ctx.register_hook("pre_tool_call", pre_tool_call_router)
     ctx.register_command(
         "location",
         handler=handle_location_slash_command,
         description="Update your presence location manually (e.g. /location away)",
+    )
+    ctx.register_command(
+        "show_hidden_tomorrow",
+        handler=lambda args: handle_briefing_slash_command("show_hidden_tomorrow", args),
+        description="Show hidden/excluded tasks for tomorrow",
+    )
+    ctx.register_command(
+        "show_task_debt",
+        handler=lambda args: handle_briefing_slash_command("show_task_debt", args),
+        description="Show active overdue task debt and stale backlog",
+    )
+    ctx.register_command(
+        "why_suppressed",
+        handler=lambda args: handle_briefing_slash_command("why_suppressed", args),
+        description="Explain why items were suppressed/hidden from your briefing workload",
+    )
+    ctx.register_command(
+        "health_score",
+        handler=lambda args: handle_briefing_slash_command("health_score", args),
+        description="Compute real-time Todoist system health score and repair advice",
+    )
+    ctx.register_command(
+        "entropy_check",
+        handler=lambda args: handle_briefing_slash_command("entropy_check", args),
+        description="Run detailed Todoist entropy audit for duplicates, stale, and postponed tasks",
+    )
+    ctx.register_command(
+        "gym",
+        handler=handle_gym_slash_command,
+        description="Log gym arrival/departure and monthly gym attendance reports",
+        args_hint="arrived | left | report [YYYY-MM] | shortcuts",
     )

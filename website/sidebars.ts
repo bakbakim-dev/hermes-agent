@@ -306,7 +306,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-red-teaming',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/red-teaming/red-teaming-godmode',
+                    'user-guide/skills/bundled/red-teaming/red-teaming-model-safety-evaluation',
                   ],
                 },
                 {

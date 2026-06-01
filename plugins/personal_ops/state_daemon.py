@@ -90,15 +90,15 @@ class StateDaemon:
         event_type = event.get("event_type")
         source = event.get("source")
         payload = event.get("payload") or {}
-        
+
         presence_state = self._read_json(PRESENCE_STATE_PATH, {})
         if not isinstance(presence_state, dict):
             presence_state = {}
-            
+
         operator_state = self._read_json(OPERATOR_STATE_PATH, {})
         if not isinstance(operator_state, dict):
             operator_state = {}
-            
+
         heartbeats = operator_state.setdefault("last_sensor_heartbeats", {})
         if source:
             heartbeats[source] = now_ts
@@ -180,6 +180,29 @@ class StateDaemon:
             presence_state["state"] = loc
             presence_state["confidence"] = 1.0
             presence_state["last_seen_ts"] = now_ts
+        elif event_type == "gym.arrived":
+            presence_state["location"] = "gym"
+            presence_state["state"] = "gym"
+            presence_state["confidence"] = 1.0
+            presence_state["last_seen_ts"] = now_ts
+            operator_state["gym_session"] = {
+                "active": True,
+                "last_event": "arrived",
+                "last_event_ts": now_ts,
+                "source": source,
+            }
+        elif event_type == "gym.left":
+            if presence_state.get("location") == "gym" or presence_state.get("state") == "gym":
+                presence_state["location"] = "away"
+                presence_state["state"] = "away"
+            presence_state["confidence"] = 1.0
+            presence_state["last_seen_ts"] = now_ts
+            operator_state["gym_session"] = {
+                "active": False,
+                "last_event": "left",
+                "last_event_ts": now_ts,
+                "source": source,
+            }
 
         self._write_json(PRESENCE_STATE_PATH, presence_state)
         self._write_json(OPERATOR_STATE_PATH, operator_state)
@@ -190,23 +213,23 @@ class StateDaemon:
         presence_state = self._read_json(PRESENCE_STATE_PATH, {})
         if not isinstance(presence_state, dict):
             presence_state = {}
-            
+
         operator_state = self._read_json(OPERATOR_STATE_PATH, {})
         if not isinstance(operator_state, dict):
             operator_state = {}
-            
+
         heartbeats = operator_state.get("last_sensor_heartbeats", {})
         sentinel_last = heartbeats.get("desktop_sentinel")
-        
+
         if sentinel_last and (now_ts - int(sentinel_last) > 600):
             current_confidence = float(presence_state.get("confidence", 1.0))
             if current_confidence > 0.0 or presence_state.get("state") == "desk":
                 if presence_state.get("state") == "desk":
                     presence_state["state"] = presence_state.get("location", "home")
-                
+
                 presence_state["confidence"] = max(0.0, current_confidence - 0.5)
                 presence_state["last_decay_ts"] = now_ts
-                
+
                 self._write_json(PRESENCE_STATE_PATH, presence_state)
                 self.set_state_meta("presence_state", presence_state)
                 return True
@@ -215,7 +238,7 @@ class StateDaemon:
     def step(self) -> int:
         """Fetch and process new events, and run decay. Returns number of processed events."""
         now_ts = int(self.time_provider())
-        
+
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
         cur.execute(
@@ -224,7 +247,7 @@ class StateDaemon:
         )
         rows = cur.fetchall()
         conn.close()
-        
+
         processed = 0
         for row in rows:
             event = {
@@ -238,7 +261,7 @@ class StateDaemon:
             self.process_event(event, now_ts)
             self.save_last_processed_id(event["id"])
             processed += 1
-            
+
         self.run_decay(now_ts)
         return processed
 

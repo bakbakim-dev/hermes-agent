@@ -3314,9 +3314,10 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
-# drops AND the publisher has disconnected.
-_event_channels: dict[str, set] = {}
-_event_lock = asyncio.Lock()
+# drops.
+_EVENT_QUEUE_MAXSIZE = 256
+_event_channels: dict[str, set[asyncio.Queue[str]]] = {}
+_event_lock = threading.RLock()
 
 
 def _resolve_chat_argv(
@@ -3380,16 +3381,24 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 async def _broadcast_event(channel: str, payload: str) -> None:
     """Fan out one publisher frame to every subscriber on `channel`."""
-    async with _event_lock:
+    with _event_lock:
         subs = list(_event_channels.get(channel, ()))
 
-    for sub in subs:
+    for queue in subs:
         try:
-            await sub.send_text(payload)
-        except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            pass
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # The dashboard sidebar is a live feed. If a browser tab stops
+            # draining events, keep the newest frame instead of letting one
+            # stale subscriber backpressure every publisher on the channel.
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -3603,23 +3612,50 @@ async def events_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
-    async with _event_lock:
-        _event_channels.setdefault(channel, set()).add(ws)
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_EVENT_QUEUE_MAXSIZE)
+    with _event_lock:
+        _event_channels.setdefault(channel, set()).add(queue)
+
+    receive_task = asyncio.create_task(ws.receive())
+    queue_task = asyncio.create_task(queue.get())
 
     try:
         while True:
-            # Subscribers don't speak — the receive() just blocks until
-            # disconnect so the connection stays open as long as the
-            # browser holds it.
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        pass
+            # Race disconnect detection against queued publisher frames.
+            # The subscriber handler owns outbound sends; publishers only
+            # enqueue payloads for this task to deliver.
+            done, _pending = await asyncio.wait(
+                {receive_task, queue_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if receive_task in done:
+                try:
+                    message = receive_task.result()
+                except WebSocketDisconnect:
+                    break
+
+                if message.get("type") == "websocket.disconnect":
+                    break
+
+                # Subscribers normally do not speak, but keep the receive
+                # loop alive for stray ping/payload frames from clients.
+                receive_task = asyncio.create_task(ws.receive())
+
+            if queue_task in done:
+                await ws.send_text(queue_task.result())
+                queue_task = asyncio.create_task(queue.get())
     finally:
-        async with _event_lock:
+        for task in (receive_task, queue_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(receive_task, queue_task, return_exceptions=True)
+
+        with _event_lock:
             subs = _event_channels.get(channel)
 
             if subs is not None:
-                subs.discard(ws)
+                subs.discard(queue)
 
                 if not subs:
                     _event_channels.pop(channel, None)

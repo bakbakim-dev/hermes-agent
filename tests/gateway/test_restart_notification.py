@@ -421,6 +421,34 @@ async def test_send_restart_notification_skips_when_adapter_missing(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_send_restart_notification_skips_invalid_telegram_chat_id(
+    tmp_path, monkeypatch, caplog
+):
+    """Stale test markers must not reach the live Telegram adapter."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "e2e-chat-1",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+
+    with caplog.at_level("WARNING", logger="gateway.run"):
+        delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target is None
+    adapter.send.assert_not_called()
+    assert any(
+        "invalid Telegram chat_id" in record.getMessage()
+        for record in caplog.records
+    )
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_send_restart_notification_cleans_up_on_send_failure(
     tmp_path, monkeypatch
 ):

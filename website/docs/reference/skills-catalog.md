@@ -154,7 +154,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`godmode`](/docs/user-guide/skills/bundled/red-teaming/red-teaming-godmode) | Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN. | `red-teaming/godmode` |
+| [`model-safety-evaluation`](/docs/user-guide/skills/bundled/red-teaming/red-teaming-model-safety-evaluation) | Defensive model-safety evaluation guidance for Hermes maintainers. | `red-teaming/model-safety-evaluation` |
 
 ## research
 

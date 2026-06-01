@@ -26,6 +26,7 @@ import re
 import signal
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +36,49 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+_BASELINE_THREAD_IDS: set[int] = set()
+
+
+def _thread_leak_check_enabled() -> bool:
+    return os.getenv("HERMES_TEST_LEAK_CHECK", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def pytest_sessionstart(session):
+    """Capture thread state for opt-in full-suite leak diagnosis."""
+    if not _thread_leak_check_enabled():
+        return
+    _BASELINE_THREAD_IDS.clear()
+    _BASELINE_THREAD_IDS.update(
+        thread.ident for thread in threading.enumerate() if thread.ident is not None
+    )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail opt-in leak-hunt runs when non-daemon threads survive teardown."""
+    if not _thread_leak_check_enabled():
+        return
+    leaked_threads = [
+        thread
+        for thread in threading.enumerate()
+        if thread.ident is not None
+        and thread.ident not in _BASELINE_THREAD_IDS
+        and thread.is_alive()
+        and not thread.daemon
+    ]
+    if not leaked_threads:
+        return
+
+    detail = ", ".join(f"{thread.name}#{thread.ident}" for thread in leaked_threads)
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(f"HERMES_TEST_LEAK_CHECK failed: leaked non-daemon threads: {detail}")
+    session.exitstatus = 1
 
 
 # ── Credential env-var filter ──────────────────────────────────────────────

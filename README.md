@@ -28,6 +28,16 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ---
 
+## Capability Truth
+
+Hermes ships many capability families, but a README bullet is not a guarantee that every connector is enabled in your local profile. Some features are built in and on by default; others are opt-in plugins, credential-gated integrations, optional dependencies, or experimental adapters.
+
+Run `hermes doctor --deep` to generate a local capability truth table from the installed plugin and tool registry. It reports what is implemented, what is enabled, what needs credentials, and what is merely available after setup.
+
+For development tests, plain `pytest` works in a fresh checkout. Use `python scripts/run_tests.py` when you want the optional xdist/timeout flags added only if the matching pytest plugins are installed.
+
+---
+
 ## Quick Install
 
 ### Linux, macOS, WSL2, Termux
@@ -172,7 +182,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv .venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
+python scripts/run_tests.py
 ```
 
 ---

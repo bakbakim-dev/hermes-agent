@@ -12,6 +12,7 @@ Covers:
 import os
 import logging
 import sys
+import re
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
@@ -102,6 +103,38 @@ class TestHermesTimeNow:
         r2 = hermes_time.now()
         assert r2.utcoffset() == timedelta(hours=5, minutes=30)
 
+    def test_current_time_context_names_canonical_timezone(self):
+        """Model-facing context includes exact local clock and IANA timezone."""
+        os.environ["HERMES_TIMEZONE"] = "America/Edmonton"
+        _reset_hermes_time_cache()
+
+        context = hermes_time.format_current_time_context()
+
+        assert context.startswith("Current local time:")
+        assert "America/Edmonton" in context
+        assert re.search(r"\(-0[67]:00\)", context)
+        assert "relative dates and times" in context
+
+    def test_current_time_context_post_midnight_hint(self, monkeypatch):
+        """When current local hour is in [0, 4], post-midnight hint is present."""
+        os.environ["HERMES_TIMEZONE"] = "America/Edmonton"
+        _reset_hermes_time_cache()
+
+        # Mock hermes_time.now() to return a time at 2:04 AM on Saturday, May 23, 2026
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        frozen_now = datetime(2026, 5, 23, 2, 4, 0, tzinfo=ZoneInfo("America/Edmonton"))
+        monkeypatch.setattr(hermes_time, "now", lambda: frozen_now)
+
+        context = hermes_time.format_current_time_context()
+
+        assert "Today is Saturday, May 23, 2026." in context
+        assert "Tomorrow is Sunday, May 24, 2026." in context
+        assert "Yesterday was Friday, May 22, 2026." in context
+        assert "⚠️ CRITICAL POST-MIDNIGHT CONTEXT:" in context
+        assert "waking cycle" in context
+
+
 
 class TestGetTimezone:
     """Test get_timezone()."""
@@ -134,6 +167,34 @@ class TestGetTimezone:
 # =========================================================================
 # execute_code child env — TZ injection
 # =========================================================================
+
+class TestTerminalEnvironmentTZ:
+    """Terminal subprocesses should inherit configured Hermes timezone as TZ."""
+
+    def test_local_terminal_env_sets_tz_from_hermes_timezone(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TIMEZONE", "America/Edmonton")
+        monkeypatch.delenv("HERMES_LOCAL_TIMEZONE", raising=False)
+        monkeypatch.delenv("TZ", raising=False)
+
+        from tools.environments.local import _make_run_env
+
+        run_env = _make_run_env({})
+
+        assert run_env["TZ"] == "America/Edmonton"
+        assert run_env["HERMES_LOCAL_TIMEZONE"] == "America/Edmonton"
+
+    def test_local_terminal_env_canonicalizes_mountain_alias(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TIMEZONE", "Canada/Mountain")
+        monkeypatch.delenv("HERMES_LOCAL_TIMEZONE", raising=False)
+        monkeypatch.delenv("TZ", raising=False)
+
+        from tools.environments.local import _make_run_env
+
+        run_env = _make_run_env({})
+
+        assert run_env["TZ"] == "America/Edmonton"
+        assert run_env["HERMES_LOCAL_TIMEZONE"] == "America/Edmonton"
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="UDS not available on Windows")
 class TestCodeExecutionTZ:
@@ -187,6 +248,19 @@ class TestCodeExecutionTZ:
         assert "HERMES_TIMEZONE=NOT_SET" in result["output"], (
             "HERMES_TIMEZONE should not leak into child env (only TZ)"
         )
+
+    def test_tz_alias_is_canonicalized_before_injection(self):
+        import json as _json
+        os.environ["HERMES_TIMEZONE"] = "Canada/Mountain"
+
+        with patch("model_tools.handle_function_call", side_effect=self._mock_handle):
+            result = _json.loads(self._execute_code(
+                code='import os; print("TZ=" + os.environ.get("TZ", "NOT_SET"))',
+                task_id="tz-alias-test",
+                enabled_tools=[],
+            ))
+        assert result["status"] == "success"
+        assert "TZ=America/Edmonton" in result["output"]
 
     def test_tz_not_injected_when_empty(self):
         """When HERMES_TIMEZONE is not set, child process has no TZ."""

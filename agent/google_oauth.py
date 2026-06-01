@@ -10,7 +10,7 @@ Synthesized from:
 - clawdbot/extensions/google/ — refresh-token rotation, VPC-SC handling reference
 - PRs #10176 (@sliverp) and #10779 (@newarthur) — PKCE module structure, cross-process lock
 
-Storage (``~/.hermes/auth/google_oauth.json``, chmod 0o600):
+Storage (``~/.hermes/auth/google_oauth.json``):
 
     {
       "refresh": "refreshToken|projectId|managedProjectId",
@@ -24,7 +24,10 @@ project IDs so subsequent sessions don't need to re-discover the project.
 This matches opencode-gemini-auth's storage contract exactly.
 
 The packed format stays parseable even if no project IDs are present — just
-a bare refresh_token is treated as "packed with empty IDs".
+a bare refresh_token is treated as "packed with empty IDs". On POSIX systems
+the credentials file is created as 0o600. On Windows, POSIX mode bits are not
+the access-control authority, so Hermes still creates the file privately and
+reports that Windows ACL review is the meaningful hardening check.
 
 Public client credentials
 -------------------------
@@ -159,6 +162,34 @@ def _credentials_path() -> Path:
 
 def _lock_path() -> Path:
     return _credentials_path().with_suffix(".json.lock")
+
+
+def credentials_file_security_status() -> Dict[str, Any]:
+    """Return the platform-aware hardening status for the credentials file."""
+    path = _credentials_path()
+    exists = path.exists()
+    mode = stat.S_IMODE(path.stat().st_mode) if exists else None
+    if os.name == "nt":
+        return {
+            "path": str(path),
+            "exists": exists,
+            "mode": mode,
+            "private": exists,
+            "platform": "windows",
+            "note": (
+                "Windows POSIX mode bits are not authoritative; Hermes writes "
+                "inside the per-user HERMES_HOME auth directory and avoids "
+                "treating 0o600 as a false guarantee."
+            ),
+        }
+    return {
+        "path": str(path),
+        "exists": exists,
+        "mode": mode,
+        "private": exists and mode == 0o600,
+        "platform": "posix",
+        "note": "POSIX credentials file should be owner read/write only.",
+    }
 
 
 _lock_state = threading.local()
@@ -513,6 +544,13 @@ def save_credentials(creds: GoogleCredentials) -> Path:
                 fh.flush()
                 os.fsync(fh.fileno())
             atomic_replace(tmp_path, path)
+            # Windows reports broad default mode bits after replace unless we
+            # tighten the final path explicitly. POSIX already had the secure
+            # creation mode, but this keeps the observable contract stable.
+            try:
+                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                logger.debug("Could not chmod Google OAuth credentials at %s", path)
         finally:
             try:
                 if tmp_path.exists():

@@ -31,6 +31,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
@@ -115,7 +116,7 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 12000, user_char_limit: int = 8000):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
@@ -185,6 +186,47 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
+    @staticmethod
+    def _pending_review_path() -> Path:
+        return get_memory_dir() / "PENDING_REVIEW.jsonl"
+
+    def _queue_pending_review(
+        self,
+        *,
+        target: str,
+        content: str,
+        reason: str,
+        current: int,
+        limit: int,
+    ) -> Dict[str, Any]:
+        """Durably queue a memory that could not fit in prompt memory.
+
+        This is deliberately separate from MEMORY.md / USER.md. Items here are
+        not injected into the system prompt, but they survive restarts and can
+        be reviewed by Hermes or the user later. This prevents the model from
+        making weak claims like "I'll keep it in context naturally" when a
+        durable write failed.
+        """
+        path = self._pending_review_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "target": target,
+            "content": content,
+            "reason": reason,
+            "usage": {"current_chars": current, "limit_chars": limit},
+            "status": "pending_review",
+            "recommended_actions": [
+                "replace_or_remove_stale_prompt_memory",
+                "raise memory.memory_char_limit or memory.user_char_limit if this belongs in prompt memory",
+                "move to operator_memory/rules if this is structured Hermes behavior rather than prompt memory",
+            ],
+        }
+        with self._file_lock(path):
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return record
+
     def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state.
 
@@ -249,12 +291,28 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
+                pending = self._queue_pending_review(
+                    target=target,
+                    content=content,
+                    reason="prompt_memory_capacity_exceeded",
+                    current=current,
+                    limit=limit,
+                )
                 return {
                     "success": False,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
+                        f"The entry was queued for memory review instead of being saved to prompt memory. "
+                        f"Replace/remove existing entries or raise the configured limit."
+                    ),
+                    "memory_saved": False,
+                    "queued_for_review": True,
+                    "pending_review": pending,
+                    "user_facing_guidance": (
+                        "Do not say you will keep this only in context. Tell the user: "
+                        "'I could not save this as permanent prompt memory because that store is full. "
+                        "I queued it for memory review, and it will not be treated as durable memory until approved.'"
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -580,7 +638,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

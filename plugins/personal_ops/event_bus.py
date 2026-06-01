@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 # Determine location for the SQLite DB (inside the Herm​es home directory)
-HERMES_HOME = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
-DB_PATH = HERMES_HOME / "personal_ops" / "event_log.db"
-
-# Ensure the directory exists
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+def _get_db_path() -> Path:
+    hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
+    path = hermes_home / "personal_ops" / "event_log.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 # Event schema definition (basic type checking)
 SCHEMA = {
@@ -28,7 +28,7 @@ SCHEMA = {
 
 # Initialize the SQLite database with an events table
 def _init_db() -> None:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_get_db_path())
     cur = conn.cursor()
     cur.execute(
         """
@@ -65,7 +65,7 @@ def ingest_event(event: Dict[str, Any]) -> bool:
     """
     if not validate_event(event):
         return False
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_get_db_path())
     cur = conn.cursor()
     try:
         cur.execute(
@@ -108,7 +108,7 @@ def log_event(source: str, event_type: str, payload: dict, dedupe_key: str = Non
     }
     success = ingest_event(event)
     if not success:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(_get_db_path())
         cur = conn.cursor()
         cur.execute("SELECT id FROM events WHERE dedupe_key = ?", (dedupe_key,))
         row = cur.fetchone()
@@ -129,7 +129,7 @@ def get_all_events() -> List[Dict[str, Any]]:
     """Return a list of all stored events ordered by insertion time.
     Payloads are deserialized back into Python dictionaries.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_get_db_path())
     cur = conn.cursor()
     cur.execute("SELECT source, event_type, timestamp, payload, dedupe_key FROM events ORDER BY id ASC")
     rows = cur.fetchall()

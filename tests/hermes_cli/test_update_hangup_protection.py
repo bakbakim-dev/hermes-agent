@@ -213,8 +213,10 @@ class TestInstallHangupProtection:
         try:
             # On Windows (no SIGHUP) we still wrap stdio and create the log.
             assert state["installed"] is True
-            assert isinstance(sys.stdout, _UpdateOutputStream)
-            assert isinstance(sys.stderr, _UpdateOutputStream)
+            # Other tests may reload hermes_cli.main during the full suite,
+            # so assert the wrapper contract instead of brittle class identity.
+            assert sys.stdout.__class__.__name__ == _UpdateOutputStream.__name__
+            assert sys.stderr.__class__.__name__ == _UpdateOutputStream.__name__
             assert state["log_file"] is not None
 
             sys.stdout.write("checking mirror\n")

@@ -46,6 +46,8 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
             "HERMES_AGENT_TIMEOUT_WARNING",
             "HERMES_GATEWAY_BUSY_INPUT_MODE",
             "HERMES_TIMEZONE",
+            "HERMES_LOCAL_TIMEZONE",
+            "TZ",
         ):
             v = os.environ.get(k)
             if v is not None:
@@ -55,7 +57,23 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
     env = dict(initial_env)
     env["HERMES_HOME"] = str(hermes_home)
     # Keep PATH / PYTHONPATH so venv imports resolve.
-    for k in ("PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME"):
+    for k in (
+        "PATH",
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
+        "HOME",
+        "SYSTEMROOT",
+        "SystemRoot",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "USERPROFILE",
+    ):
         if k in os.environ and k not in env:
             env[k] = os.environ[k]
 
@@ -150,6 +168,8 @@ def test_config_timezone_wins_over_stale_env(hermes_home: Path) -> None:
     env = _run_gateway_import(hermes_home, initial_env={})
 
     assert env.get("HERMES_TIMEZONE") == "America/Los_Angeles"
+    assert env.get("HERMES_LOCAL_TIMEZONE") == "America/Los_Angeles"
+    assert env.get("TZ") == "America/Los_Angeles"
 
 
 def test_env_value_survives_when_config_omits_key(hermes_home: Path) -> None:

@@ -228,6 +228,25 @@ def _get_enabled_plugins() -> Optional[set]:
 # ---------------------------------------------------------------------------
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+VALID_PLUGIN_PERMISSIONS: Set[str] = {
+    "browser",
+    "calendar",
+    "commands",
+    "credentials",
+    "external_write",
+    "filesystem_read",
+    "filesystem_write",
+    "hooks",
+    "llm",
+    "memory",
+    "message_injection",
+    "messaging_send",
+    "network",
+    "platform",
+    "skills",
+    "terminal",
+    "tools",
+}
 
 
 @dataclass
@@ -265,6 +284,7 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    permissions: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -293,6 +313,15 @@ class PluginContext:
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
 
+    def _require_permission(self, permission: str) -> None:
+        if self.manifest.source not in {"user", "project", "entrypoint"}:
+            return
+        if permission not in set(self.manifest.permissions or []):
+            plugin_id = self.manifest.key or self.manifest.name
+            raise PermissionError(
+                f"Plugin '{plugin_id}' requires '{permission}' permission in plugin.yaml"
+            )
+
     # -- host-owned LLM access ----------------------------------------------
 
     @property
@@ -306,6 +335,7 @@ class PluginContext:
         ``plugins.entries.<plugin_id>.llm.*`` config keys.
 
         See :mod:`agent.plugin_llm` for the full surface."""
+        self._require_permission("llm")
         if self._llm is None:
             from agent.plugin_llm import PluginLlm
             plugin_id = self.manifest.key or self.manifest.name
@@ -334,6 +364,7 @@ class PluginContext:
         CDP-backed implementation). Without it, attempting to register a name
         already claimed by a different toolset is rejected.
         """
+        self._require_permission("tools")
         from tools.registry import registry
 
         registry.register(
@@ -367,6 +398,7 @@ class PluginContext:
 
         Returns True if the message was queued successfully.
         """
+        self._require_permission("message_injection")
         cli = self._manager._cli_ref
         if cli is None:
             logger.warning("inject_message: no CLI reference (not available in gateway mode)")
@@ -397,6 +429,7 @@ class PluginContext:
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
         as the default dispatch function via ``set_defaults(func=...)``."""
+        self._require_permission("commands")
         self._manager._cli_commands[name] = {
             "name": name,
             "help": help,
@@ -434,6 +467,7 @@ class PluginContext:
 
         Names conflicting with built-in commands are rejected with a warning.
         """
+        self._require_permission("commands")
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning(
@@ -624,6 +658,7 @@ class PluginContext:
         subsystem's dispatcher (:func:`tools.browser_tool._get_cloud_provider`)
         consults the registry built up by these calls.
         """
+        self._require_permission("browser")
         from agent.browser_provider import BrowserProvider
         from agent.browser_registry import register_provider as _register_browser_provider
 
@@ -674,6 +709,7 @@ class PluginContext:
                 setup_fn=irc_interactive_setup,
             )
         """
+        self._require_permission("platform")
         from gateway.platform_registry import platform_registry, PlatformEntry
 
         entry_kwargs.setdefault("plugin_name", self.manifest.name)
@@ -704,6 +740,7 @@ class PluginContext:
         Unknown hook names produce a warning but are still stored so
         forward-compatible plugins don't break.
         """
+        self._require_permission("hooks")
         if hook_name not in VALID_HOOKS:
             logger.warning(
                 "Plugin '%s' registered unknown hook '%s' "
@@ -735,6 +772,7 @@ class PluginContext:
             ValueError: if *name* contains ``':'`` or invalid characters.
             FileNotFoundError: if *path* does not exist.
         """
+        self._require_permission("skills")
         from agent.skill_utils import _NAMESPACE_RE
 
         if ":" in name:
@@ -1107,6 +1145,32 @@ class PluginManager:
                     except Exception:
                         pass
 
+            raw_permissions = data.get("permissions", [])
+            if raw_permissions is None:
+                raw_permissions = []
+            if not isinstance(raw_permissions, list) or not all(
+                isinstance(item, str) for item in raw_permissions
+            ):
+                logger.warning(
+                    "Plugin %s: permissions must be a list of strings",
+                    key,
+                )
+                return None
+            permissions = list(
+                dict.fromkeys(item.strip() for item in raw_permissions if item.strip())
+            )
+            unknown_permissions = [
+                item for item in permissions if item not in VALID_PLUGIN_PERMISSIONS
+            ]
+            if unknown_permissions:
+                logger.warning(
+                    "Plugin %s: unknown permission(s): %s (valid: %s)",
+                    key,
+                    ", ".join(sorted(unknown_permissions)),
+                    ", ".join(sorted(VALID_PLUGIN_PERMISSIONS)),
+                )
+                return None
+
             logger.debug(
                 "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s",
                 key, name, kind, source, plugin_dir,
@@ -1123,6 +1187,7 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                permissions=permissions,
             )
         except Exception as exc:
             logger.warning(
@@ -1346,6 +1411,8 @@ class PluginManager:
                     "description": loaded.manifest.description,
                     "source": loaded.manifest.source,
                     "enabled": loaded.enabled,
+                    "requires_env": loaded.manifest.requires_env,
+                    "permissions": loaded.manifest.permissions,
                     "tools": len(loaded.tools_registered),
                     "hooks": len(loaded.hooks_registered),
                     "commands": len(loaded.commands_registered),

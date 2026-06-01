@@ -171,6 +171,23 @@ def _build_provider_env_blocklist() -> frozenset:
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
+def _inject_timezone_env(env: dict) -> None:
+    """Mirror Hermes' configured timezone into subprocess TZ."""
+    tz_name = str(
+        env.get("HERMES_TIMEZONE") or env.get("HERMES_LOCAL_TIMEZONE") or ""
+    ).strip()
+    if not tz_name:
+        return
+    try:
+        from hermes_time import _canonicalize_timezone_name
+
+        tz_name = _canonicalize_timezone_name(tz_name)
+    except Exception:
+        pass
+    env["TZ"] = tz_name
+    env["HERMES_LOCAL_TIMEZONE"] = tz_name
+
+
 def _inject_context_hermes_home(env: dict) -> None:
     """Bridge the context-local Hermes home override into subprocess env."""
     try:
@@ -205,6 +222,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
+    _inject_timezone_env(sanitized)
     _inject_context_hermes_home(sanitized)
 
     # Per-profile HOME isolation for background processes (same as _make_run_env).
@@ -307,6 +325,7 @@ def _make_run_env(env: dict) -> dict:
     if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
 
+    _inject_timezone_env(run_env)
     _inject_context_hermes_home(run_env)
 
     # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,

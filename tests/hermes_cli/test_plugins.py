@@ -47,7 +47,21 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     plugin_dir = base / name
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest = {"name": name, "version": "0.1.0", "description": f"Test plugin {name}"}
+    manifest = {
+        "name": name,
+        "version": "0.1.0",
+        "description": f"Test plugin {name}",
+        "permissions": [
+            "browser",
+            "commands",
+            "hooks",
+            "llm",
+            "message_injection",
+            "platform",
+            "skills",
+            "tools",
+        ],
+    }
     if manifest_extra:
         manifest.update(manifest_extra)
 
@@ -638,7 +652,9 @@ class TestPluginContext:
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "tool_plugin"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "tool_plugin"}))
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "tool_plugin", "permissions": ["tools"]})
+        )
         (plugin_dir / "__init__.py").write_text(
             'def register(ctx):\n'
             '    ctx.register_tool(\n'
@@ -678,7 +694,9 @@ class TestPluginContext:
             plugins_dir = tmp_path / "hermes_test" / "plugins"
             plugin_dir = plugins_dir / "shadow_plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "shadow_plugin"}))
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.dump({"name": "shadow_plugin", "permissions": ["tools"]})
+            )
             (plugin_dir / "__init__.py").write_text(
                 'def register(ctx):\n'
                 '    ctx.register_tool(\n'
@@ -720,7 +738,9 @@ class TestPluginContext:
             plugins_dir = tmp_path / "hermes_test" / "plugins"
             plugin_dir = plugins_dir / "override_plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "override_plugin"}))
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.dump({"name": "override_plugin", "permissions": ["tools"]})
+            )
             (plugin_dir / "__init__.py").write_text(
                 'def register(ctx):\n'
                 '    ctx.register_tool(\n'
@@ -761,7 +781,9 @@ class TestPluginContext:
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "new_override_plugin"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "new_override_plugin"}))
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "new_override_plugin", "permissions": ["tools"]})
+        )
         (plugin_dir / "__init__.py").write_text(
             'def register(ctx):\n'
             '    ctx.register_tool(\n'
@@ -799,7 +821,9 @@ class TestPluginToolVisibility:
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "vis_plugin"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "vis_plugin"}))
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "vis_plugin", "permissions": ["tools"]})
+        )
         (plugin_dir / "__init__.py").write_text(
             'def register(ctx):\n'
             '    ctx.register_tool(\n'
@@ -1019,7 +1043,7 @@ class TestPluginCommands:
     def test_register_command_basic(self):
         """register_command() stores handler, description, and plugin name."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         handler = lambda args: f"echo {args}"
@@ -1036,7 +1060,7 @@ class TestPluginCommands:
     def test_register_command_with_args_hint(self):
         """args_hint is stored and surfaced for gateway-native UI registration."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         ctx.register_command(
@@ -1052,7 +1076,7 @@ class TestPluginCommands:
     def test_register_command_args_hint_whitespace_trimmed(self):
         """args_hint leading/trailing whitespace is stripped."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         ctx.register_command("foo", lambda a: a, args_hint="  <file>  ")
@@ -1061,7 +1085,7 @@ class TestPluginCommands:
     def test_register_command_normalizes_name(self):
         """Names are lowercased, stripped, and leading slashes removed."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         ctx.register_command("/MyCmd ", lambda a: a, description="test")
@@ -1071,7 +1095,7 @@ class TestPluginCommands:
     def test_register_command_empty_name_rejected(self, caplog):
         """Empty name after normalization is rejected with a warning."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
@@ -1082,7 +1106,7 @@ class TestPluginCommands:
     def test_register_command_builtin_conflict_rejected(self, caplog):
         """Commands that conflict with built-in names are rejected."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
@@ -1093,7 +1117,7 @@ class TestPluginCommands:
     def test_register_command_default_description(self):
         """Missing description defaults to 'Plugin command'."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         ctx.register_command("status-cmd", lambda a: a)
@@ -1102,7 +1126,7 @@ class TestPluginCommands:
     def test_get_plugin_command_handler_found(self):
         """get_plugin_command_handler() returns the handler for a registered command."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         handler = lambda args: f"result: {args}"
@@ -1121,7 +1145,7 @@ class TestPluginCommands:
     def test_get_plugin_commands_returns_dict(self):
         """get_plugin_commands() returns the full commands dict."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
         ctx.register_command("cmd-a", lambda a: a, description="A")
         ctx.register_command("cmd-b", lambda a: a, description="B")
@@ -1250,7 +1274,7 @@ class TestPluginCommands:
     def test_handler_receives_raw_args(self):
         """The handler is called with the raw argument string."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         received = []
@@ -1265,7 +1289,7 @@ class TestPluginCommands:
         mgr = PluginManager()
 
         for plugin_name, cmd_name in [("plugin-a", "cmd-a"), ("plugin-b", "cmd-b")]:
-            manifest = PluginManifest(name=plugin_name, source="user")
+            manifest = PluginManifest(name=plugin_name, source="user", permissions=["commands"])
             ctx = PluginContext(manifest, mgr)
             ctx.register_command(cmd_name, lambda a: a, description=f"From {plugin_name}")
 
@@ -1323,7 +1347,7 @@ class TestPluginDispatchTool:
     def test_dispatch_tool_calls_registry(self):
         """dispatch_tool() delegates to registry.dispatch()."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         mock_registry = MagicMock()
@@ -1339,7 +1363,7 @@ class TestPluginDispatchTool:
     def test_dispatch_tool_injects_parent_agent_from_cli_ref(self):
         """When _cli_ref has an agent, it's passed as parent_agent."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         mock_agent = MagicMock()
@@ -1360,7 +1384,7 @@ class TestPluginDispatchTool:
     def test_dispatch_tool_no_parent_agent_when_no_cli_ref(self):
         """When _cli_ref is None (gateway mode), no parent_agent is injected."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
         mgr._cli_ref = None
 
@@ -1376,7 +1400,7 @@ class TestPluginDispatchTool:
     def test_dispatch_tool_no_parent_agent_when_agent_is_none(self):
         """When cli_ref exists but agent is None (not yet initialized), skip parent_agent."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         mock_cli = MagicMock()
@@ -1395,7 +1419,7 @@ class TestPluginDispatchTool:
     def test_dispatch_tool_respects_explicit_parent_agent(self):
         """Explicit parent_agent kwarg is not overwritten by _cli_ref.agent."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
 
         cli_agent = MagicMock(name="cli_agent")
@@ -1417,7 +1441,7 @@ class TestPluginDispatchTool:
     def test_dispatch_tool_forwards_extra_kwargs(self):
         """Extra kwargs are forwarded to registry.dispatch()."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
         mgr._cli_ref = None
 
@@ -1433,7 +1457,7 @@ class TestPluginDispatchTool:
     def test_dispatch_tool_returns_json_string(self):
         """dispatch_tool() returns the raw JSON string from the registry."""
         mgr = PluginManager()
-        manifest = PluginManifest(name="test-plugin", source="user")
+        manifest = PluginManifest(name="test-plugin", source="user", permissions=["commands", "tools", "hooks"])
         ctx = PluginContext(manifest, mgr)
         mgr._cli_ref = None
 

@@ -11338,6 +11338,11 @@ def main():
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Run deeper capability, plugin-permission, pytest, and release-hygiene checks",
+    )
+    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,

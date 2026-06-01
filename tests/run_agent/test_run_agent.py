@@ -2610,6 +2610,43 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_current_local_time_context_is_injected_without_persisting(self, agent):
+        self._setup_agent(agent)
+        captured_messages = {}
+
+        def _fake_api_call(api_kwargs):
+            captured_messages["messages"] = api_kwargs["messages"]
+            return _mock_response(content="Final answer", finish_reason="stop")
+
+        agent._interruptible_api_call = _fake_api_call
+        with (
+            patch(
+                "hermes_time.format_current_time_context",
+                create=True,
+                return_value=(
+                    "Current local time: 2026-05-21 14:22 Thursday "
+                    "America/Edmonton (-06:00)\n"
+                    "Use this value for relative dates and times unless the user "
+                    "explicitly gives another timezone."
+                ),
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("what's on my tasks today?")
+
+        api_user_messages = [
+            m for m in captured_messages["messages"] if m.get("role") == "user"
+        ]
+        assert len(api_user_messages) == 1
+        assert api_user_messages[0]["content"].startswith("what's on my tasks today?")
+        assert (
+            "Current local time: 2026-05-21 14:22 Thursday "
+            "America/Edmonton (-06:00)"
+        ) in api_user_messages[0]["content"]
+        assert result["messages"][0]["content"] == "what's on my tasks today?"
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -2659,7 +2696,11 @@ class TestRunConversation:
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
-        assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
+        assert any(
+            msg.get("role") == "user"
+            and str(msg.get("content", "")).startswith("search something")
+            for msg in pre_request_calls[0]["request_messages"]
+        )
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
@@ -2880,6 +2921,61 @@ class TestRunConversation:
         assert fallback_called["called"], "Fallback should have been triggered"
         assert result["completed"] is True
         assert result["final_response"] == "Fallback answer."
+
+    def test_rate_limit_fallback_emits_one_consolidated_status(self, agent):
+        """Rate-limit eager fallback should be visible once, with cause and target."""
+
+        class _RateLimitError(Exception):
+            status_code = 429
+
+            def __str__(self):
+                return "Error code: 429 - Rate limit exceeded."
+
+        self._setup_agent(agent)
+        agent._fallback_chain = [
+            {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}
+        ]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+        agent._credential_pool = None
+        responses = [
+            _RateLimitError(),
+            _mock_response(content="Fallback answer.", finish_reason="stop"),
+        ]
+
+        def _fake_api_call(api_kwargs):
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://openrouter.ai/api/v1"
+        fallback_client.api_key = "fallback-key"
+        status_messages = []
+        agent.status_callback = lambda _event, message: status_messages.append(message)
+        agent._interruptible_api_call = _fake_api_call
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fallback_client, "deepseek/deepseek-v4-flash"),
+            ),
+        ):
+            result = agent.run_conversation("hello")
+
+        fallback_messages = [
+            message for message in status_messages if "fallback" in message.lower()
+        ]
+        assert result["completed"] is True
+        assert result["final_response"] == "Fallback answer."
+        assert len(fallback_messages) == 1
+        assert "Rate limited" in fallback_messages[0]
+        assert "deepseek/deepseek-v4-flash via openrouter" in fallback_messages[0]
+        assert "Primary model failed" not in fallback_messages[0]
 
     def test_empty_response_fallback_also_empty_returns_empty(self, agent):
         """If fallback also returns empty, final response is (empty)."""
