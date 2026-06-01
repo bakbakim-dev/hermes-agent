@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 import httpx
+import anyio
 
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_home
@@ -468,7 +469,7 @@ class TeamsMeetingPipeline:
             )
             audio_path = await self._prepare_audio_path(recording_path)
             job = self._persist_job(job, status="transcribing_audio")
-            result = await asyncio.to_thread(self.transcribe_fn, str(audio_path), self.config.stt_model)
+            result = await anyio.to_thread.run_sync(self.transcribe_fn, str(audio_path), self.config.stt_model)
             if not result.get("success"):
                 raise TeamsPipelineRetryableError(str(result.get("error") or "Unknown STT failure"))
             transcript = str(result.get("transcript") or "").strip()

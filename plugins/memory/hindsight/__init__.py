@@ -442,7 +442,8 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
 def _embedded_profile_env_path(config: dict[str, Any]):
     from pathlib import Path
 
-    return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
+    home = Path(os.environ.get("HOME") or str(Path.home())).expanduser()
+    return home / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):

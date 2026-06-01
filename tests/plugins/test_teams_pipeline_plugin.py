@@ -387,8 +387,15 @@ class TestTeamsMeetingPipeline:
         from plugins.teams_pipeline import pipeline as pipeline_module
 
         monkeypatch.setattr(pipeline_module, "resolve_meeting_reference", _transcript_meeting_resolver)
-        monkeypatch.setattr(pipeline_module, "fetch_preferred_transcript_text", lambda *a, **kw: asyncio.sleep(0, result=(None, None)))
-        monkeypatch.setattr(pipeline_module, "list_recording_artifacts", lambda *a, **kw: asyncio.sleep(0, result=[]))
+
+        async def _missing_transcript(*_args, **_kwargs):
+            return None, None
+
+        async def _no_recordings(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(pipeline_module, "fetch_preferred_transcript_text", _missing_transcript)
+        monkeypatch.setattr(pipeline_module, "list_recording_artifacts", _no_recordings)
 
         store = TeamsPipelineStore(tmp_path / "teams-store.json")
         pipeline = TeamsMeetingPipeline(

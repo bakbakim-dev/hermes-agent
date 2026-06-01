@@ -42,7 +42,7 @@ _lock = threading.Lock()
 
 # Tool-call result shapes we can parse
 _WRITE_FILE_PATH_KEY = "path"
-_TERMINAL_PATH_REGEX = re.compile(r"(?:^|\s)(/[^\s'\"`]+|\~/[^\s'\"`]+)")
+_TERMINAL_PATH_REGEX = re.compile(r"(?:^|\s)(/[^\s'\"`]+|\~/[^\s'\"`]+|[A-Za-z]:[\\/][^\s'\"`]+)")
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +109,10 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
     if isinstance(cmd, str) and cmd:
         # Tokenise the command — catches `touch /tmp/hermes-x/test_foo.py`
         try:
-            for tok in shlex.split(cmd, posix=True):
-                if tok.startswith(("/", "~")):
-                    paths.add(tok)
+            for tok in shlex.split(cmd, posix=False):
+                cleaned = tok.strip("'\"")
+                if cleaned.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", cleaned):
+                    paths.add(cleaned)
         except ValueError:
             pass
     # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
