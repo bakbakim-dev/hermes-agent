@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import shlex
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -27,9 +28,15 @@ def _isolated_home(tmp_path, monkeypatch):
 
 def _hook_script(tmp_path: Path, body: str, name: str = "hook.sh") -> Path:
     p = tmp_path / name
-    p.write_text(body)
+    p.write_text(body, encoding="utf-8")
     p.chmod(0o755)
     return p
+
+
+def _python_hook(tmp_path: Path, code: str, name: str = "hook.py") -> str:
+    p = tmp_path / name
+    p.write_text(code, encoding="utf-8")
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(p))}"
 
 
 def _run(sub_args: SimpleNamespace) -> str:
@@ -88,11 +95,15 @@ class TestHooksTest:
         scripts tested with `hermes hooks test` saw different top-level
         keys than at runtime, silently breaking in production."""
         capture = tmp_path / "captured.json"
-        script = _hook_script(
+        command = _python_hook(
             tmp_path,
-            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+            (
+                "import pathlib, sys\n"
+                f"pathlib.Path({str(capture)!r}).write_text(sys.stdin.read(), encoding='utf-8')\n"
+                "print('{}')\n"
+            ),
         )
-        cfg = {"hooks": {"subagent_stop": [{"command": str(script)}]}}
+        cfg = {"hooks": {"subagent_stop": [{"command": command}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             _run(SimpleNamespace(
                 hooks_action="test", event="subagent_stop",
@@ -113,16 +124,15 @@ class TestHooksTest:
         assert seen["tool_input"] is None
 
     def test_fires_real_subprocess_and_parses_block(self, tmp_path):
-        block_script = _hook_script(
+        command = _python_hook(
             tmp_path,
-            "#!/usr/bin/env bash\n"
-            'printf \'{"decision": "block", "reason": "nope"}\\n\'\n',
-            name="block.sh",
+            'print(\'{"decision": "block", "reason": "nope"}\')\n',
+            name="block.py",
         )
         cfg = {
             "hooks": {
                 "pre_tool_call": [
-                    {"matcher": "terminal", "command": str(block_script)},
+                    {"matcher": "terminal", "command": command},
                 ],
             },
         }
@@ -203,19 +213,19 @@ class TestHooksDoctor:
         assert "not allowlisted" in out.lower()
 
     def test_flags_invalid_json(self, tmp_path):
-        script = _hook_script(
+        command = _python_hook(
             tmp_path,
-            "#!/usr/bin/env bash\necho 'not json!'\n",
+            "print('not json!')\n",
         )
-        shell_hooks._record_approval("on_session_start", str(script))
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        shell_hooks._record_approval("on_session_start", command)
+        cfg = {"hooks": {"on_session_start": [{"command": command}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "not valid JSON" in out
 
     def test_flags_mtime_drift(self, tmp_path, monkeypatch):
         """Allowlist with older mtime than current -> drift warning."""
-        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+        command = _python_hook(tmp_path, "print('{}')\n")
 
         # Manually stash an allowlist entry with an old mtime
         from agent.shell_hooks import allowlist_path
@@ -224,22 +234,22 @@ class TestHooksDoctor:
             "approvals": [
                 {
                     "event": "on_session_start",
-                    "command": str(script),
+                    "command": command,
                     "approved_at": "2000-01-01T00:00:00Z",
                     "script_mtime_at_approval": "2000-01-01T00:00:00Z",
                 }
             ]
         }))
 
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        cfg = {"hooks": {"on_session_start": [{"command": command}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "modified since approval" in out
 
     def test_clean_script_runs(self, tmp_path):
-        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
-        shell_hooks._record_approval("on_session_start", str(script))
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        command = _python_hook(tmp_path, "print('{}')\n")
+        shell_hooks._record_approval("on_session_start", command)
+        cfg = {"hooks": {"on_session_start": [{"command": command}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "All shell hooks look healthy" in out

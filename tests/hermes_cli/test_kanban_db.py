@@ -2152,6 +2152,7 @@ def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: "/usr/local/bin/hermes")
     argv = kb._resolve_hermes_argv()
     assert argv == ["/usr/local/bin/hermes"]
 
@@ -2212,6 +2213,7 @@ def test_resolve_hermes_argv_hermes_bin_bare_name_uses_path(monkeypatch, tmp_pat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(path_hermes.parent))
     monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: str(path_hermes))
 
     assert kb._resolve_hermes_argv() == [str(path_hermes)]
 
@@ -2271,6 +2273,7 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: None)
     argv = kb._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
 

@@ -238,6 +238,7 @@ markers = [
 # The optional runner can still add pytest-timeout when installed, but it is
 # no longer required just to collect or run the suite.
 addopts = "-m 'not integration'"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ty.environment]
 python-version = "3.13"

@@ -124,6 +124,15 @@ class TestWslSystemdOperational:
 class TestSupportsSystemdServicesWSL:
     """Test that supports_systemd_services() handles WSL correctly."""
 
+    @pytest.fixture(autouse=True)
+    def _linux_systemd_platform(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
+        monkeypatch.setattr(
+            gateway.shutil,
+            "which",
+            lambda name: "/usr/bin/systemctl" if name == "systemctl" else None,
+        )
+
     def test_wsl_with_systemd(self, monkeypatch):
         """WSL + working systemd → True."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
@@ -160,6 +169,11 @@ class TestSupportsSystemdServicesWSL:
 
 class TestGatewayCommandWSLMessages:
     """Test that WSL users see appropriate guidance."""
+
+    @pytest.fixture(autouse=True)
+    def _wsl_platform(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway, "is_container", lambda: False)
 
     def test_install_wsl_no_systemd(self, monkeypatch, capsys):
         """hermes gateway install on WSL without systemd shows guidance."""

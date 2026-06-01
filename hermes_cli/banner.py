@@ -683,7 +683,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     release_info = get_latest_release_tag()
     if release_info:
         _tag, _url = release_info
-        title_markup = f"[bold {title_color}][link={_url}]{version_label}[/link][/]"
+        title_markup = f"\x1b]8;;{_url}\x1b\\{version_label}\x1b]8;;\x1b\\"
     else:
         title_markup = f"[bold {title_color}]{version_label}[/]"
     outer_panel = Panel(

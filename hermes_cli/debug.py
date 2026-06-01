@@ -447,7 +447,7 @@ def _capture_log_snapshot(
                 newline_count = 0
 
                 while pos > 0 and (total < max_bytes or newline_count <= tail_lines + 1) and total < max_bytes * 2:
-                    read_size = min(chunk_size, pos)
+                    read_size = min(chunk_size, pos, max_bytes * 2 - total)
                     pos -= read_size
                     f.seek(pos)
                     chunk = f.read(read_size)

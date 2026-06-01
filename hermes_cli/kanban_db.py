@@ -3717,6 +3717,14 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
+    if not all(
+        hasattr(os, name)
+        for name in ("WIFEXITED", "WEXITSTATUS", "WIFSIGNALED", "WTERMSIG")
+    ):
+        code = int(raw)
+        if code == 0:
+            return ("clean_exit", 0)
+        return ("nonzero_exit", code)
     try:
         if os.WIFEXITED(raw):
             code = os.WEXITSTATUS(raw)

@@ -1366,13 +1366,15 @@ class SystemScopeRequiresRootError(RuntimeError):
 
 def _user_dbus_socket_path() -> Path:
     """Return the expected per-user D-Bus socket path (regardless of existence)."""
-    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    uid = os.getuid() if hasattr(os, "getuid") else os.getpid()
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
     return Path(xdg) / "bus"
 
 
 def _user_systemd_private_socket_path() -> Path:
     """Return the per-user systemd private socket path (regardless of existence)."""
-    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    uid = os.getuid() if hasattr(os, "getuid") else os.getpid()
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
     return Path(xdg) / "systemd" / "private"
 
 
@@ -1395,7 +1397,9 @@ def _ensure_user_systemd_env() -> None:
     We detect the standard socket path and set the vars so all subsequent
     subprocess calls inherit them.
     """
-    uid = os.getuid()  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    if not hasattr(os, "getuid"):
+        return
+    uid = os.getuid()
     if "XDG_RUNTIME_DIR" not in os.environ:
         runtime_dir = f"/run/user/{uid}"
         if Path(runtime_dir).exists():

@@ -2815,14 +2815,17 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
-        from hermes_cli.gateway import _all_platforms, _platform_status
+        from hermes_cli.gateway import _PLATFORMS, _all_platforms, _platform_status
         # Count any non-empty status other than the "not configured" sentinel —
         # platforms like WhatsApp ("enabled, not paired"), Matrix ("configured
         # + E2EE"), and Signal ("partially configured") all indicate the user
         # has already started setup and we shouldn't force the section to rerun.
+        platforms_by_key = {p["key"]: p for p in _all_platforms()}
+        for plat in _PLATFORMS:
+            platforms_by_key.setdefault(plat["key"], plat)
         configured = [
             _gateway_platform_short_label(plat["label"])
-            for plat in _all_platforms()
+            for plat in platforms_by_key.values()
             if _platform_status(plat) and _platform_status(plat) != "not configured"
         ]
         if configured:

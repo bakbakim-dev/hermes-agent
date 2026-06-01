@@ -8,6 +8,7 @@ Covers:
 
 import os
 import time
+import importlib.util
 from unittest.mock import MagicMock, patch, call
 
 import pytest
@@ -245,6 +246,11 @@ class TestSessionBrowsePicker:
 # ─── Curses-based picker (mocked curses) ────────────────────────────────────
 
 class TestCursesBrowse:
+    pytestmark = pytest.mark.skipif(
+        importlib.util.find_spec("_curses") is None,
+        reason="Python curses module is not available on this platform",
+    )
+
     """Tests for the curses-based interactive picker via simulated key sequences."""
 
     def _run_with_keys(self, sessions, key_sequence):

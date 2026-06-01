@@ -158,8 +158,8 @@ def test_setup_custom_providers_synced(tmp_path, monkeypatch):
 
 def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch, capsys):
     env = {
-        "TELEGRAM_BOT_TOKEN": "",
-        "TELEGRAM_HOME_CHANNEL": "",
+        "TELEGRAM_BOT_TOKEN": "token",
+        "TELEGRAM_HOME_CHANNEL": "home",
         "DISCORD_BOT_TOKEN": "",
         "DISCORD_HOME_CHANNEL": "",
         "SLACK_BOT_TOKEN": "",
@@ -179,6 +179,7 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _prompt, _items, pre_selected: pre_selected)
     monkeypatch.setattr("platform.system", lambda: "Linux")
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
@@ -197,8 +198,8 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
 def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     """setup_gateway() in a Docker container shows Docker-specific restart instructions."""
     env = {
-        "TELEGRAM_BOT_TOKEN": "",
-        "TELEGRAM_HOME_CHANNEL": "",
+        "TELEGRAM_BOT_TOKEN": "token",
+        "TELEGRAM_HOME_CHANNEL": "home",
         "DISCORD_BOT_TOKEN": "",
         "DISCORD_HOME_CHANNEL": "",
         "SLACK_BOT_TOKEN": "",
@@ -218,6 +219,7 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _prompt, _items, pre_selected: pre_selected)
     monkeypatch.setattr("platform.system", lambda: "Linux")
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)

@@ -950,6 +950,14 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "who", "collapse", "expand", "leave", "join", "open", "search",
     "topic", "mute", "pro", "shortcuts",
 })
+_SLACK_PRIORITY_ALIASES = frozenset({
+    # These are heavily documented gateway shorthands. Register them before
+    # plugin expansion so Slack's 50-command cap cannot silently drop them.
+    "bg",
+    "btw",
+    "q",
+    "reset",
+})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1011,12 +1019,22 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: plugin commands. They are explicit installed capability,
-    # so give them slots before aliases when Slack's 50-command cap is tight.
+    # Second pass: the highest-value gateway aliases. They are user-facing
+    # commands in every other gateway, so they should not be crowded out by
+    # plugin expansion under Slack's 50-command cap.
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            if alias in _SLACK_PRIORITY_ALIASES:
+                _add(alias, f"Alias for /{cmd.name} - {cmd.description}", cmd.args_hint or "")
+
+    # Third pass: plugin commands. They are explicit installed capability,
+    # so give them slots before non-priority aliases when the cap is tight.
     for name, description, args_hint in _iter_plugin_command_entries():
         _add(name, description, args_hint or "")
 
-    # Third pass: aliases.
+    # Final pass: remaining aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
@@ -1191,8 +1209,9 @@ class SlashCommandCompleter(Completer):
 
         Returns the path-like token under the cursor, or None if the
         current word doesn't look like a path.  A word is path-like when
-        it starts with ``./``, ``../``, ``~/``, ``/``, or contains a
-        ``/`` separator (e.g. ``src/main.py``).
+        it starts with ``./``, ``../``, ``~/``, ``/``, their Windows
+        backslash equivalents, a Windows drive prefix, or contains a path
+        separator (e.g. ``src/main.py`` or ``src\\main.py``).
         """
         if not text:
             return None
@@ -1205,7 +1224,12 @@ class SlashCommandCompleter(Completer):
         if not word:
             return None
         # Only trigger path completion for path-like tokens
-        if word.startswith(("./", "../", "~/", "/")) or "/" in word:
+        if (
+            word.startswith(("./", "../", "~/", "/", ".\\", "..\\", "~\\"))
+            or "/" in word
+            or "\\" in word
+            or re.match(r"^[A-Za-z]:", word)
+        ):
             return word
         return None
 
@@ -1214,7 +1238,7 @@ class SlashCommandCompleter(Completer):
         """Yield Completion objects for file paths matching *word*."""
         expanded = os.path.expanduser(word)
         # Split into directory part and prefix to match inside it
-        if expanded.endswith("/"):
+        if expanded.endswith(("/", "\\")):
             search_dir = expanded
             prefix = ""
         else:

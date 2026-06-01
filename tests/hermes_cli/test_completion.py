@@ -16,6 +16,14 @@ from hermes_cli.completion import _walk, generate_bash, generate_zsh, generate_f
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _require_working_bash():
+    if not shutil.which("bash"):
+        pytest.skip("bash is not installed")
+    probe = subprocess.run(["bash", "-c", "exit 0"], capture_output=True)
+    if probe.returncode != 0:
+        pytest.skip("bash is present but not usable in this environment")
+
+
 def _make_parser() -> argparse.ArgumentParser:
     """Build a minimal parser that mirrors the real hermes structure."""
     p = argparse.ArgumentParser(prog="hermes")
@@ -109,6 +117,7 @@ class TestGenerateBash:
 
     def test_valid_bash_syntax(self):
         """Script must pass `bash -n` syntax check."""
+        _require_working_bash()
         out = generate_bash(_make_parser())
         with tempfile.NamedTemporaryFile(mode="w", suffix=".bash", delete=False) as f:
             f.write(out)

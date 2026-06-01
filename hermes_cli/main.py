@@ -5976,6 +5976,12 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
     import py_compile
 
     root = Path(root)
+    def _display_path(path: Path, relpath: str) -> str:
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            return Path(relpath).as_posix()
+
     for relpath in _UPDATE_CRITICAL_FILES:
         path = root / relpath
         if not path.exists():
@@ -5985,9 +5991,9 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
         try:
             py_compile.compile(str(path), doraise=True)
         except py_compile.PyCompileError as exc:
-            return False, str(path), str(exc)
+            return False, _display_path(path, relpath), str(exc)
         except OSError as exc:
-            return False, str(path), f"could not read: {exc}"
+            return False, _display_path(path, relpath), f"could not read: {exc}"
     return True, None, None
 
 

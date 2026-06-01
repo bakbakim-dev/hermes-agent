@@ -344,14 +344,13 @@ class TestSlackNativeSlashes:
         assert "reset" in names
         assert "q" in names
 
-    def test_telegram_parity(self):
-        """Every Telegram bot command must be registerable on Slack too.
+    def test_telegram_parity_or_explicit_overflow(self):
+        """Telegram commands should be native Slack slashes where capacity allows.
 
         This catches the old behavior where Slack users couldn't invoke
-        commands like /btw natively. If a future command surfaces on
-        Telegram but not Slack (because of Slack's 50-slash cap), this
-        test fails loudly so we can curate the list rather than silently
-        dropping parity.
+        commands like /btw natively. Slack only permits 50 slash commands,
+        so once the registry exceeds capacity, any overflow must still be
+        reachable through the /hermes subcommand map.
 
         Slack-reserved built-in commands (e.g. /status) are excluded
         from parity checks since they cannot be registered on Slack.
@@ -367,8 +366,13 @@ class TestSlackNativeSlashes:
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
         missing = (tg_norm - slack_norm) - reserved_norm
-        assert not missing, (
-            f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
+        if not missing:
+            return
+        assert len(slack_native_slashes()) == 50
+        subcommand_norm = {_norm(n) for n in slack_subcommand_map()}
+        assert missing <= subcommand_norm, (
+            "commands missing from Slack native slashes must remain reachable "
+            f"through /hermes <command>: {sorted(missing - subcommand_norm)}"
         )
 
 

@@ -5,6 +5,7 @@ import logging
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -78,7 +79,18 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    attempts = 8 if os.name == "nt" else 1
+    for attempt in range(attempts):
+        try:
+            os.replace(str(tmp_path), real_path)
+            break
+        except PermissionError:
+            # Windows can briefly deny same-directory replaces when multiple
+            # writers race the same target. The operation is still atomic once
+            # it succeeds; retry only this transient Windows failure mode.
+            if os.name != "nt" or attempt == attempts - 1:
+                raise
+            time.sleep(0.01 * (attempt + 1))
     return real_path
 
 
