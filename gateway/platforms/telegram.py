@@ -2911,6 +2911,28 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.warning("Failed to record callback outcome: %s", exc)
+        if data.startswith("hermes_feedback:"):
+            feedback = data.split(":", 1)[1].strip().lower() or "acknowledged"
+            try:
+                from plugins.personal_ops.temp_personal_ops_tools import handle_runtime
+
+                msg_obj = getattr(query, "message", None)
+                handle_runtime(
+                    {
+                        "action": "event_ingest",
+                        "event_type": "telegram_feedback",
+                        "source": "telegram-callback",
+                        "message_id": str(getattr(msg_obj, "message_id", "") or ""),
+                        "feedback": feedback,
+                    }
+                )
+            except Exception as exc:
+                logger.warning("Failed to dispatch Hermes feedback callback: %s", exc)
+            try:
+                await query.answer()
+            except Exception:
+                pass
+            return
         query_message = getattr(query, "message", None)
         query_chat_id = getattr(query_message, "chat_id", None)
         query_chat = getattr(query_message, "chat", None)

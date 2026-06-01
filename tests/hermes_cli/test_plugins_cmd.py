@@ -377,6 +377,28 @@ class TestCmdList:
 
         cmd_list()
 
+    def test_status_marks_bundled_backend_as_auto_loaded(self):
+        from hermes_cli.plugins_cmd import _plugin_display_status
+
+        assert _plugin_display_status(
+            name="personal-ops",
+            source="bundled",
+            kind="backend",
+            enabled=set(),
+            disabled=set(),
+        ) == "[green]enabled[/green]"
+
+    def test_status_keeps_standalone_plugins_opt_in(self):
+        from hermes_cli.plugins_cmd import _plugin_display_status
+
+        assert _plugin_display_status(
+            name="observability/langfuse",
+            source="bundled",
+            kind="standalone",
+            enabled=set(),
+            disabled=set(),
+        ) == "[yellow]not enabled[/yellow]"
+
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd._read_manifest")
     def test_list_with_plugins(self, mock_read_manifest, mock_plugins_dir):
@@ -703,7 +725,11 @@ class TestCursesRadiolist:
     def test_keyboard_interrupt_returns_cancel_value(self):
         from hermes_cli.curses_ui import curses_radiolist
 
-        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
+        fake_curses = types.SimpleNamespace(
+            wrapper=MagicMock(side_effect=KeyboardInterrupt),
+        )
+
+        with patch.dict("sys.modules", {"curses": fake_curses}), patch("sys.stdin") as mock_stdin:
             mock_stdin.isatty.return_value = True
             result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
             assert result == -1
@@ -782,7 +808,7 @@ class TestNoAutoActivation:
         # This tests the run_agent.py logic indirectly by checking that the
         # code path for default config doesn't call get_plugin_context_engine.
         import run_agent as ra_module
-        source = open(ra_module.__file__).read()
+        source = Path(ra_module.__file__).read_text(encoding="utf-8")
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source

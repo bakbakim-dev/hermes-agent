@@ -730,7 +730,7 @@ def _discover_all_plugins() -> list:
     except ImportError:
         yaml = None
 
-    seen: dict = {}  # key -> (key, version, description, source, path)
+    seen: dict = {}  # key -> (key, version, description, source, path, kind)
 
     def _scan(base: Path, source: str, prefix: str, depth: int) -> None:
         if not base.is_dir():
@@ -752,6 +752,7 @@ def _discover_all_plugins() -> list:
                 manifest_name = d.name
                 version = ""
                 description = ""
+                kind = "standalone"
                 if yaml:
                     try:
                         with open(manifest_file, encoding="utf-8") as f:
@@ -759,6 +760,7 @@ def _discover_all_plugins() -> list:
                         manifest_name = manifest.get("name", d.name)
                         version = manifest.get("version", "")
                         description = manifest.get("description", "")
+                        kind = str(manifest.get("kind") or "standalone")
                     except Exception:
                         pass
                 # Path-derived key, intentionally ignoring the manifest
@@ -773,7 +775,7 @@ def _discover_all_plugins() -> list:
                 # Bundled is scanned before user, so the user pass overwrites
                 # bundled entries with the same key — matches
                 # PluginManager.discover_and_load's "user wins" semantics.
-                seen[key] = (key, version, description, src_label, d)
+                seen[key] = (key, version, description, src_label, d, kind)
                 continue
 
             # No manifest at this level — treat as a category namespace and
@@ -788,6 +790,24 @@ def _discover_all_plugins() -> list:
     _scan(_plugins_dir(), "user", "", 0)
 
     return list(seen.values())
+
+
+def _plugin_display_status(
+    *,
+    name: str,
+    source: str,
+    kind: str,
+    enabled: set,
+    disabled: set,
+) -> str:
+    """Return the operator-facing load status for a discovered plugin."""
+    if name in disabled:
+        return "[red]disabled[/red]"
+    if name in enabled:
+        return "[green]enabled[/green]"
+    if source == "bundled" and kind in {"backend", "platform", "model-provider"}:
+        return "[green]enabled[/green]"
+    return "[yellow]not enabled[/yellow]"
 
 
 def cmd_list() -> None:
@@ -812,13 +832,14 @@ def cmd_list() -> None:
     table.add_column("Description")
     table.add_column("Source", style="dim")
 
-    for name, version, description, source, _dir in entries:
-        if name in disabled:
-            status = "[red]disabled[/red]"
-        elif name in enabled:
-            status = "[green]enabled[/green]"
-        else:
-            status = "[yellow]not enabled[/yellow]"
+    for name, version, description, source, _dir, kind in entries:
+        status = _plugin_display_status(
+            name=name,
+            source=source,
+            kind=kind,
+            enabled=enabled,
+            disabled=disabled,
+        )
         table.add_row(name, status, str(version), description, source)
 
     console.print()
@@ -826,7 +847,10 @@ def cmd_list() -> None:
     console.print()
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
-    console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
+    console.print(
+        "[dim]Standalone/user plugins are opt-in; bundled backend/platform "
+        "plugins auto-load unless disabled.[/dim]"
+    )
 
 
 # ---------------------------------------------------------------------------

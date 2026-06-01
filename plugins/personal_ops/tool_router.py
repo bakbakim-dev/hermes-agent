@@ -49,6 +49,7 @@ INTENT_TOOLSETS: Dict[str, Set[str]] = {
 }
 
 HIGH_RISK_CLASSES = {
+    "unclassified",
     "shell_command",
     "browser_logged_in",
     "external_write",

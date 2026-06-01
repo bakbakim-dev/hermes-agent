@@ -16,12 +16,14 @@ HERMES_HOME = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
 DB_PATH = HERMES_HOME / "personal_ops" / "event_log.db"
 PRESENCE_STATE_PATH = HERMES_HOME / "presence_state.json"
 OPERATOR_STATE_PATH = HERMES_HOME / "operator_state.json"
+LOG_HYGIENE_INTERVAL_SECONDS = 15 * 60
 
 class StateDaemon:
     def __init__(self, db_path: Path = DB_PATH, time_provider=time.time):
         self.db_path = db_path
         self.time_provider = time_provider
         self.last_processed_id = 0
+        self.last_log_hygiene_ts = 0
         self.init_db()
         self.load_last_processed_id()
 
@@ -263,7 +265,19 @@ class StateDaemon:
             processed += 1
 
         self.run_decay(now_ts)
+        self.run_log_hygiene(now_ts)
         return processed
+
+    def run_log_hygiene(self, now_ts: int) -> None:
+        if now_ts - self.last_log_hygiene_ts < LOG_HYGIENE_INTERVAL_SECONDS:
+            return
+        self.last_log_hygiene_ts = now_ts
+        try:
+            from plugins.personal_ops.runtime_hygiene import maintain_runtime_logs
+
+            maintain_runtime_logs(HERMES_HOME)
+        except Exception as e:
+            print(f"Error in runtime log hygiene: {e}")
 
     def loop(self, interval: float = 1.0) -> None:
         """Continuous execution loop."""

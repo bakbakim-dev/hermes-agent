@@ -77,3 +77,47 @@ def test_decision_daemon_cycle(tmp_path, monkeypatch):
     assert why_quiet_path.exists()
     lines = why_quiet_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 3
+
+
+def test_decision_daemon_logs_cycle_to_event_bus(tmp_path, monkeypatch):
+    presence_path = tmp_path / "presence_state.json"
+    operator_path = tmp_path / "operator_state.json"
+    why_quiet_path = tmp_path / "why_quiet.jsonl"
+
+    monkeypatch.setattr("plugins.personal_ops.decision_daemon.PRESENCE_STATE_PATH", presence_path)
+    monkeypatch.setattr("plugins.personal_ops.decision_daemon.OPERATOR_STATE_PATH", operator_path)
+    monkeypatch.setattr("plugins.personal_ops.decision_daemon.WHY_QUIET_LOG_PATH", why_quiet_path)
+
+    presence_path.write_text(json.dumps({"state": "home", "afk": True}), encoding="utf-8")
+    operator_path.write_text(json.dumps({}), encoding="utf-8")
+
+    logged_events = []
+
+    def fake_log_event(source, event_type, payload, dedupe_key=None):
+        logged_events.append(
+            {
+                "source": source,
+                "event_type": event_type,
+                "payload": payload,
+                "dedupe_key": dedupe_key,
+            }
+        )
+        return {"success": True, "duplicate": False}
+
+    monkeypatch.setattr("plugins.personal_ops.event_bus.log_event", fake_log_event)
+
+    daemon = DecisionDaemon(time_provider=lambda: 1_000_000_000)
+    monkeypatch.setattr(
+        daemon,
+        "fetch_todoist_tasks",
+        lambda: [{"id": "task_1", "content": "Laundry check", "priority": 2}],
+    )
+
+    daemon.run_cycle()
+
+    assert logged_events
+    event = logged_events[-1]
+    assert event["source"] == "decision_daemon"
+    assert event["event_type"] == "decision.cycle"
+    assert event["payload"]["task_count"] == 1
+    assert event["payload"]["initiative_queue"][0]["task_id"] == "task_1"

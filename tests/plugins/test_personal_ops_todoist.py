@@ -827,6 +827,22 @@ def test_todoist_router_falls_back_to_native_when_mcp_fails(monkeypatch):
     assert result["tasks"][0]["content"] == "Native task"
 
 
+def test_todoist_mcp_primary_write_actions_still_require_approval(monkeypatch):
+    monkeypatch.setenv("TODOIST_CONNECTOR_MODE", "mcp_primary")
+    monkeypatch.setattr(tools, "_todoist_mcp_available", lambda: True)
+    monkeypatch.setattr(
+        tools,
+        "_todoist_mcp_call",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("write actions must not bypass approvals through MCP")),
+    )
+
+    result = _decode(tools.handle_todoist({"action": "add_task", "content": "Review one admin loop"}))
+
+    assert result["approval_required"] is True
+    assert result["action"] == "add_task"
+    assert result["connector"] == "native_api"
+
+
 def test_focus_guard_uses_native_when_mcp_primary_is_enabled(monkeypatch):
     seen = {}
     monkeypatch.setenv("TODOIST_CONNECTOR_MODE", "mcp_primary")
@@ -1046,6 +1062,35 @@ def test_todoist_status_native_primary_does_not_probe_mcp(monkeypatch):
     assert result["connector_mode"] == "native_primary"
     assert result["mcp_available"] is None
     assert result["mcp_probe_skipped"] is True
+
+
+def test_todoist_status_reports_mcp_as_active_primary_when_available(monkeypatch):
+    monkeypatch.setenv("TODOIST_CONNECTOR_MODE", "mcp_primary")
+    monkeypatch.setenv("TODOIST_MCP_REQUIRED", "true")
+    monkeypatch.setattr(
+        tools,
+        "_todoist_native_call",
+        lambda args: {
+            "success": True,
+            "configured": True,
+            "token_masked": "abc...xyz",
+            "connector": "native_api",
+            "stable_primary": False,
+            "auth_model": "personal_api_token",
+        },
+    )
+    monkeypatch.setattr(tools, "_todoist_mcp_available", lambda: True)
+
+    result = _decode(tools.handle_todoist({"action": "status"}))
+
+    assert result["success"] is True
+    assert result["connector_mode"] == "mcp_primary"
+    assert result["mcp_primary_configured"] is True
+    assert result["mcp_required"] is True
+    assert result["mcp_available"] is True
+    assert result["connector"] == "mcp"
+    assert result["active_primary_connector"] == "mcp"
+    assert result["native_status_connector"] == "native_api"
 
 
 def _fake_operator_intelligence():
@@ -2001,6 +2046,8 @@ def test_runtime_ensure_todoist_mcp_adds_config(monkeypatch, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("mcp_servers:\n  playwright-live:\n    command: /bin/true\n", encoding="utf-8")
     monkeypatch.setattr(tools, "HERMES_CONFIG_PATH", config_path)
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(tools.Path, "home", lambda: fake_home)
 
     result = _decode(tools.handle_runtime({"action": "ensure_todoist_mcp"}))
     written = config_path.read_text(encoding="utf-8")
@@ -2008,11 +2055,12 @@ def test_runtime_ensure_todoist_mcp_adds_config(monkeypatch, tmp_path):
     assert result["success"] is True
     assert result["changed"] is True
     assert "todoist" in result["mcp_servers"]
-    assert result["todoist"]["auth"] == "oauth"
-    assert result["todoist"]["enabled"] is False
-    assert "https://ai.todoist.net/mcp" in written
-    assert "auth: oauth" in written
-    assert "enabled: false" in written
+    assert result["todoist"]["command"] == "node"
+    assert result["todoist"]["enabled"] is True
+    assert result["todoist"]["env"]["TODOIST_API_KEY"] == "${TODOIST_API_KEY}"
+    assert "https://ai.todoist.net/mcp" not in written
+    assert "auth: oauth" not in written
+    assert "enabled: true" in written
     assert "playwright-live" in written
 
 
@@ -4291,6 +4339,15 @@ def test_hermes_capabilities_dossier_summarizes_live_and_scaffolded_surfaces():
 
 
 def test_hermes_system_audit_marks_live_vs_scaffolded_surfaces(monkeypatch):
+    for name in (
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_BASE_URL",
+        "HERMES_LANGFUSE_SECRET_KEY",
+        "HERMES_LANGFUSE_PUBLIC_KEY",
+        "HERMES_LANGFUSE_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
     env_path = tools.HERMES_HOME / ".env"
     env_path.write_text(
         "\n".join(

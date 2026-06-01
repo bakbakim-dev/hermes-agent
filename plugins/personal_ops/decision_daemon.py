@@ -115,6 +115,45 @@ class DecisionDaemon:
         with open(WHY_QUIET_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry) + "\n")
 
+    def log_cycle_event(
+        self,
+        *,
+        presence_state: Dict[str, Any],
+        operator_state: Dict[str, Any],
+        initiative_queue: List[Dict[str, Any]],
+    ) -> None:
+        queue_summary = [
+            {
+                "task_id": item["task"].get("id"),
+                "content": item["task"].get("content"),
+                "score": item["score"],
+                "allowed": item["evaluation"]["allowed"],
+                "reason": item["evaluation"]["reason"],
+                "action_guidance": item["evaluation"]["action_guidance"],
+            }
+            for item in initiative_queue
+        ]
+        payload = {
+            "created_at": datetime.fromtimestamp(self.time_provider(), timezone.utc).isoformat(),
+            "task_count": len(queue_summary),
+            "allowed_count": sum(1 for item in queue_summary if item["allowed"]),
+            "blocked_count": sum(1 for item in queue_summary if not item["allowed"]),
+            "presence_state": {
+                "state": presence_state.get("state"),
+                "confidence": presence_state.get("confidence"),
+                "afk": presence_state.get("afk"),
+                "location": presence_state.get("location"),
+            },
+            "attention": operator_state.get("attention", {}),
+            "initiative_queue": queue_summary,
+        }
+        try:
+            from plugins.personal_ops import event_bus
+
+            event_bus.log_event("decision_daemon", "decision.cycle", payload)
+        except Exception as e:
+            print(f"Error logging decision cycle event: {e}")
+
     def run_cycle(self) -> List[Dict[str, Any]]:
         presence_state = self._read_json(PRESENCE_STATE_PATH, {})
         operator_state = self._read_json(OPERATOR_STATE_PATH, {})
@@ -157,6 +196,11 @@ class DecisionDaemon:
             for item in initiative_queue
         ]
         self._write_json(OPERATOR_STATE_PATH, operator_state)
+        self.log_cycle_event(
+            presence_state=presence_state,
+            operator_state=operator_state,
+            initiative_queue=initiative_queue,
+        )
         
         return initiative_queue
 

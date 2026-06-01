@@ -4360,6 +4360,7 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
     now_ts = int(now_dt.timestamp())
     operator_state = _operator_read_state()
     state_changed = False
+    sent_cycle_message = False
 
     # 1. Active Sprint check
     sprint = operator_state.get("active_sprint")
@@ -4375,6 +4376,7 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
                 {"text": "☕ Take a Break", "callback_data": "po:nudge_mute:1h"}
             ]
             _safe_send_telegram_message(msg, parse_mode="HTML", buttons=buttons)
+            sent_cycle_message = True
 
     # 2. Daily boundary checks / transitions
     tz = _runtime_local_tz()
@@ -4454,10 +4456,13 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
                             {"text": "🔄 Defer All Today", "callback_data": "po:defer_all_today"}
                         ]
                         _safe_send_telegram_message("\n".join(lines), parse_mode="HTML", buttons=buttons)
+                        sent_cycle_message = True
                     except Exception:
                         _safe_send_telegram_message("<b>☀️ Work Window Started</b>\nLet's get focus mode going. Open your first task to start.", parse_mode="HTML")
+                        sent_cycle_message = True
                 else:
                     _safe_send_telegram_message("<b>☀️ Work Window Started</b>\nLet's get focus mode going. Open your first task to start.", parse_mode="HTML")
+                    sent_cycle_message = True
 
             elif current_phase == "quiet_hours":
                 cleanup_res = _run_auto_cleanup_routines()
@@ -4466,6 +4471,7 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
                 if logs:
                     msg += "\n".join([f"• {_escape_html(l)}" for l in logs])
                 _safe_send_telegram_message(msg, parse_mode="HTML")
+                sent_cycle_message = True
 
     # 3. Evening Briefing check (9:45 PM tomorrow preview)
     if local_hour == 21 and local_min >= 45:
@@ -4744,13 +4750,14 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
                 }
 
                 _safe_send_telegram_message("\n".join(lines), force=True, parse_mode="HTML", buttons=buttons)
+                sent_cycle_message = True
             except Exception:
                 pass
 
     # 4. Periodic past due task nudge checks
     # Only run the check every 15 minutes to avoid rate-limiting or heavy resources
     last_past_due_check = int(operator_state.get("last_past_due_check_ts") or 0)
-    if 7 <= local_hour < 22 and (now_ts - last_past_due_check >= 900):
+    if not sent_cycle_message and 7 <= local_hour < 22 and (now_ts - last_past_due_check >= 900):
         operator_state["last_past_due_check_ts"] = now_ts
         state_changed = True
 
@@ -4907,7 +4914,12 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
                             else:
                                 msg = f"<b>🌸 Gentle Check-In: {escaped_content}</b>\n\nHey Mikail! Just noticing this task{time_str} is past its scheduled due time today. If it's realistic, let's jump in and get it done now so you can keep the day's momentum going! ✨"
                         else:
-                            msg = f"<b>✨ Backlog Check-In: {escaped_content}</b>\n\nHi Mikail! A friendly nudge about this overdue task from your backlog. Let's take just 5 to 10 minutes to tackle it today and keep your system clear and light! 🧹"
+                            msg = (
+                                f"<b>Backlog Check-In: {escaped_content}</b>\n\n"
+                                "This is overdue, but I am not treating overdue as do-now by default. "
+                                "Use one small move: finish it, shrink it, schedule the next real window, "
+                                "or archive it if it is no longer real."
+                            )
 
                     buttons = [
                         {"text": "✅ Done", "callback_data": f"po:task_complete:{t_id}"},
@@ -6088,12 +6100,22 @@ def _runtime_ensure_todoist_mcp() -> Dict[str, Any]:
         if isinstance(loaded, dict):
             data = loaded
     servers = dict(data.get("mcp_servers") or {})
+    todoist_mcp_main = (
+        Path.home()
+        / ".hermes"
+        / "mcp"
+        / "todoist"
+        / "node_modules"
+        / "@doist"
+        / "todoist-mcp"
+        / "dist"
+        / "main.js"
+    )
     expected = {
-        "url": "https://ai.todoist.net/mcp",
-        "auth": "oauth",
-        "enabled": False,
-        "timeout": 120,
-        "connect_timeout": 60,
+        "command": "node",
+        "args": [str(todoist_mcp_main)],
+        "env": {"TODOIST_API_KEY": "${TODOIST_API_KEY}"},
+        "enabled": True,
     }
     prior = dict(servers.get("todoist") or {})
     changed = prior != {**prior, **expected}
@@ -6112,15 +6134,16 @@ def _runtime_ensure_todoist_mcp() -> Dict[str, Any]:
         "mcp_servers": sorted(servers.keys()),
         "todoist": servers["todoist"],
         "summary": (
-            "Todoist hosted MCP is recorded but disabled for 24/7 reliability. "
-            "Hermes uses the stable Todoist API-token path as primary; enable OAuth MCP only for diagnostics."
+            "Todoist MCP is configured as a local official Doist MCP process using TODOIST_API_KEY. "
+            "Hosted OAuth MCP is not used for unattended Hermes runtime."
         ),
     }
 
 
-def _approval_response(request_id: str, summary: str, reason: str, benefit: str) -> str:
+def _approval_response(request_id: str, summary: str, reason: str, benefit: str, action: str = "") -> str:
     return _tool_result(
         success=False,
+        action=action or None,
         approval_required=True,
         request_id=request_id,
         summary=summary,
@@ -6162,7 +6185,7 @@ def _create_approval(*, tool_name: str, action: str, summary: str, reason: str, 
         "approval_created",
         {"request_id": request_id, "tool": tool_name, "action": action, "summary": summary},
     )
-    return _approval_response(request_id, summary, reason, benefit)
+    return _approval_response(request_id, summary, reason, benefit, action)
 
 
 def _pop_pending(request_id: str) -> Optional[Dict[str, Any]]:
@@ -10840,20 +10863,33 @@ def handle_todoist(args: Dict[str, Any], **_: Any) -> str:
         native_result: Optional[Dict[str, Any]] = None
         if action == "status":
             native_result = _todoist_native_call(args)
-            native_result["connector"] = "native_api"
-            native_result["connector_mode"] = _todoist_connector_mode()
-            native_result["mcp_primary_configured"] = _todoist_connector_mode() == "mcp_primary"
-            native_result["mcp_required"] = _env("TODOIST_MCP_REQUIRED").strip().lower() in {"1", "true", "yes", "on"}
-            native_result["mcp_available"] = (
+            connector_mode = _todoist_connector_mode()
+            mcp_primary_configured = connector_mode == "mcp_primary"
+            mcp_required = _env("TODOIST_MCP_REQUIRED").strip().lower() in {"1", "true", "yes", "on"}
+            mcp_available = (
                 _todoist_mcp_available()
-                if native_result["mcp_primary_configured"] or native_result["mcp_required"]
+                if mcp_primary_configured or mcp_required
                 else None
             )
-            native_result["mcp_probe_skipped"] = native_result["mcp_available"] is None
+            native_status_connector = native_result.get("connector") or "native_api"
+            if mcp_primary_configured and mcp_available:
+                active_primary_connector = "mcp"
+            elif mcp_primary_configured and mcp_required:
+                active_primary_connector = "mcp_unavailable"
+            else:
+                active_primary_connector = "native_api"
+            native_result["connector"] = active_primary_connector
+            native_result["active_primary_connector"] = active_primary_connector
+            native_result["native_status_connector"] = native_status_connector
+            native_result["connector_mode"] = connector_mode
+            native_result["mcp_primary_configured"] = mcp_primary_configured
+            native_result["mcp_required"] = mcp_required
+            native_result["mcp_available"] = mcp_available
+            native_result["mcp_probe_skipped"] = mcp_available is None
             return _tool_result(native_result)
         if action == "intelligence":
             return _tool_result(_todoist_intelligence(args))
-        if _todoist_connector_mode() == "mcp_primary" and action in {"list_tasks", "search_tasks", "add_task", "close_task", "reopen_task"}:
+        if _todoist_connector_mode() == "mcp_primary" and action in {"list_tasks", "search_tasks"}:
             try:
                 mcp_result = _todoist_mcp_call(action, args)
                 mcp_result["connector"] = "mcp"
