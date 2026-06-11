@@ -319,7 +319,7 @@ terminal:
 #   tirith_enabled: true        # Enable/disable tirith scanning
 #   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
 #   tirith_timeout: 5           # Scan timeout in seconds
-#   tirith_fail_open: true      # Allow commands if tirith unavailable
+#   tirith_fail_open: false     # Block commands if tirith is unavailable/errors
 
 # =============================================================================
 # Browser Tool Configuration
@@ -332,13 +332,12 @@ browser:
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================
-# Soft warnings are enabled by default. They append guidance to repeated failed
-# or non-progressing tool results but still let the tool execute. Hard stops are
-# opt-in circuit breakers for autonomous/cron sessions where stopping a loop is
-# preferable to spending the full iteration budget.
+# Soft warnings and hard stops are enabled by default. Repeated failed or
+# non-progressing tool calls get guidance first, then a circuit breaker before
+# an autonomous/gateway loop spends the full iteration budget.
 tool_loop_guardrails:
   warnings_enabled: true
-  hard_stop_enabled: false
+  hard_stop_enabled: true
   warn_after:
     exact_failure: 2
     same_tool_failure: 3
@@ -1131,7 +1130,7 @@ display:
 #   # with deterministic hashes before being sent to the model.
 #   # Names and usernames are NOT affected (user-chosen, publicly visible).
 #   # Routing/delivery still uses the original values internally.
-#   redact_pii: false
+#   redact_pii: true
 
 # =============================================================================
 # Shell-script hooks

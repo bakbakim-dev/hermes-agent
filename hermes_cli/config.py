@@ -811,6 +811,15 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "plugins": {
+        "enabled": [],
+        "disabled": [],
+        "auto_enable_bundled": [
+            "personal-ops",
+            "platforms/telegram",
+            "observability/langfuse",
+        ],
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
@@ -1123,11 +1132,11 @@ DEFAULT_CONFIG = {
     },
 
     # Tool loop guardrails nudge models when they repeat failed or
-    # non-progressing tool calls. Soft warnings are always-on by default;
-    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    # non-progressing tool calls. Hard stops default on so autonomous and
+    # gateway loops fail bounded instead of burning the full turn budget.
     "tool_loop_guardrails": {
         "warnings_enabled": True,
-        "hard_stop_enabled": False,
+        "hard_stop_enabled": True,
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,
@@ -1591,7 +1600,7 @@ DEFAULT_CONFIG = {
 
     # Privacy settings
     "privacy": {
-        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        "redact_pii": True,  # Hash user IDs and strip phone numbers from LLM context where safe.
     },
     
     # Text-to-speech configuration
@@ -2051,7 +2060,7 @@ DEFAULT_CONFIG = {
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
-        "tirith_fail_open": True,
+        "tirith_fail_open": False,
         "website_blocklist": {
             "enabled": False,
             "domains": [],
@@ -2319,12 +2328,12 @@ DEFAULT_CONFIG = {
         # When true, prune ended sessions older than retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Only touches ended sessions — active sessions are always preserved.
-        # Default false: session history is valuable for search recall, and
-        # silently deleting it could surprise users.  Opt in explicitly.
-        "auto_prune": False,
+        # Default true: avoid unbounded local PII/log growth. Active sessions
+        # are always preserved; only ended sessions are pruned.
+        "auto_prune": True,
         # How many days of ended-session history to keep.  Matches the
         # default of ``hermes sessions prune``.
-        "retention_days": 90,
+        "retention_days": 30,
         # VACUUM after a prune that actually deleted rows.  SQLite does not
         # reclaim disk space on DELETE — freed pages are just reused on
         # subsequent INSERTs — so without VACUUM the file stays bloated
@@ -5413,7 +5422,7 @@ _SECURITY_COMMENT = """
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
-#   tirith_fail_open: true
+#   tirith_fail_open: false
 """
 
 _FALLBACK_COMMENT = """
