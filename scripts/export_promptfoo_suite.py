@@ -25,12 +25,16 @@ def main() -> int:
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # temp_personal_ops_tools resolves HERMES_HOME at import time.
     os.environ["HERMES_HOME"] = str(out_dir)
 
-    from plugins.personal_ops import temp_personal_ops_tools as tools
+    from plugins.personal_ops.promptfoo_suite import export_promptfoo_suite
 
-    result = json.loads(tools.handle_runtime({"action": "eval_suite_export"}))
+    result = export_promptfoo_suite(
+        proposals_path=out_dir / "self_improve_proposals.json",
+        trace_log_path=out_dir / "runtime_traces.jsonl",
+        config_path=out_dir / "promptfoo_config.json",
+        evals_path=out_dir / "promptfoo_eval_cases.json",
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result.get("success") else 1
 

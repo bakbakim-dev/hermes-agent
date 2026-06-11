@@ -225,3 +225,112 @@ def build_promptfoo_config(*, tests: list[dict[str, Any]], evals_path: Path) -> 
             }
         },
     }
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    try:
+        if not path.exists():
+            return default
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _read_jsonl_recent(path: Path, *, limit: int = 100) -> list[dict[str, Any]]:
+    try:
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            entries.append(payload)
+    return entries
+
+
+def write_promptfoo_suite(
+    *,
+    config: dict[str, Any],
+    cases: list[dict[str, Any]],
+    config_path: Path,
+    evals_path: Path,
+) -> dict[str, Any]:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    evals_path.parent.mkdir(parents=True, exist_ok=True)
+    evals_path.write_text(json.dumps({"tests": cases}, indent=2, sort_keys=True), encoding="utf-8")
+    config_path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+    return {
+        "success": True,
+        "action": "eval_suite_export",
+        "case_count": len(cases),
+        "path": str(evals_path),
+        "config_path": str(config_path),
+        "command_hint": f"promptfoo eval -c {config_path}",
+    }
+
+
+def export_promptfoo_suite(
+    *,
+    proposals_path: Path,
+    trace_log_path: Path,
+    config_path: Path,
+    evals_path: Path,
+) -> dict[str, Any]:
+    proposals = list((_read_json(proposals_path, {}).get("proposals") or []))
+    tests: list[dict[str, Any]] = builtin_common_sense_cases()
+    for proposal in proposals:
+        eval_case = dict(proposal.get("eval_case") or {})
+        if not eval_case:
+            continue
+        input_state = dict(eval_case.get("input") or {})
+        tests.append(
+            promptfoo_case(
+                description=str(eval_case.get("name") or proposal.get("proposal_id") or "unnamed_eval"),
+                input_state=input_state,
+                assertions=[{"type": "contains", "value": str(eval_case.get("expected_behavior") or "").strip()}],
+                metadata={
+                    "source": "self_improve_proposal",
+                    "proposal_id": proposal.get("proposal_id"),
+                    "kind": proposal.get("kind"),
+                    "task_title": proposal.get("task_title"),
+                },
+            )
+        )
+    traces = _read_jsonl_recent(trace_log_path, limit=100)
+    for trace in traces:
+        if str(trace.get("status") or "").strip().lower() != "failure":
+            continue
+        data = dict(trace.get("data") or {})
+        expected = str(data.get("expected_behavior") or "").strip()
+        if not expected:
+            continue
+        tests.append(
+            promptfoo_case(
+                description=f"trace_failure_{trace.get('trace_id')}",
+                input_state={
+                    "task": str(data.get("task_title") or ""),
+                    "task_type": str(data.get("task_type") or ""),
+                    "current_time": str(data.get("current_time") or ""),
+                },
+                assertions=[{"type": "contains", "value": expected}],
+                metadata={
+                    "source": "trace_failure",
+                    "trace_id": trace.get("trace_id"),
+                    "trace_type": trace.get("trace_type"),
+                },
+            )
+        )
+    tests = dedupe_cases(tests)
+    config = build_promptfoo_config(tests=tests, evals_path=evals_path)
+    return write_promptfoo_suite(
+        config=config,
+        cases=tests,
+        config_path=config_path,
+        evals_path=evals_path,
+    )

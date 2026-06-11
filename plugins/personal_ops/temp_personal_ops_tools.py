@@ -43,12 +43,7 @@ from .runtime_context_tools import runtime_profile_prune_plan as _runtime_profil
 from .runtime_context_tools import runtime_secret_inventory as _runtime_secret_inventory
 from .runtime_context_tools import runtime_tool_router_simulate as _runtime_tool_router_simulate
 from .runtime_context_tools import runtime_tool_router_status as _runtime_tool_router_status
-from .promptfoo_suite import (
-    build_promptfoo_config as _build_promptfoo_config,
-    builtin_common_sense_cases as _promptfoo_builtin_common_sense_cases,
-    dedupe_cases as _promptfoo_dedupe_cases,
-    promptfoo_case as _promptfoo_case,
-)
+from .promptfoo_suite import export_promptfoo_suite as _export_promptfoo_suite
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
 APPROVALS_PATH = HERMES_HOME / "personal_ops_approvals.json"
@@ -8627,63 +8622,12 @@ def _runtime_trace_event(args: Dict[str, Any]) -> Dict[str, Any]:
 
 def _runtime_eval_suite_export(args: Dict[str, Any]) -> Dict[str, Any]:
     del args
-    proposals = list((_self_improve_proposals_read().get("proposals") or []))
-    tests: List[Dict[str, Any]] = _promptfoo_builtin_common_sense_cases()
-    for proposal in proposals:
-        eval_case = dict(proposal.get("eval_case") or {})
-        if not eval_case:
-            continue
-        input_state = dict(eval_case.get("input") or {})
-        tests.append(
-            _promptfoo_case(
-                description=str(eval_case.get("name") or proposal.get("proposal_id") or "unnamed_eval"),
-                input_state=input_state,
-                assertions=[{"type": "contains", "value": str(eval_case.get("expected_behavior") or "").strip()}],
-                metadata={
-                    "source": "self_improve_proposal",
-                    "proposal_id": proposal.get("proposal_id"),
-                    "kind": proposal.get("kind"),
-                    "task_title": proposal.get("task_title"),
-                },
-            )
-        )
-    traces = _read_jsonl_recent(TRACE_LOG_PATH, limit=100)
-    for trace in traces:
-        if str(trace.get("status") or "").strip().lower() != "failure":
-            continue
-        data = dict(trace.get("data") or {})
-        expected = str(data.get("expected_behavior") or "").strip()
-        if not expected:
-            continue
-        tests.append(
-            _promptfoo_case(
-                description=f"trace_failure_{trace.get('trace_id')}",
-                input_state={
-                    "task": str(data.get("task_title") or ""),
-                    "task_type": str(data.get("task_type") or ""),
-                    "current_time": str(data.get("current_time") or ""),
-                },
-                assertions=[{"type": "contains", "value": expected}],
-                metadata={
-                    "source": "trace_failure",
-                    "trace_id": trace.get("trace_id"),
-                    "trace_type": trace.get("trace_type"),
-                },
-            )
-        )
-    tests = _promptfoo_dedupe_cases(tests)
-    payload = {"tests": tests}
-    _write_json(PROMPTFOO_EVALS_PATH, payload)
-    config = _build_promptfoo_config(tests=tests, evals_path=PROMPTFOO_EVALS_PATH)
-    _write_json(PROMPTFOO_CONFIG_PATH, config)
-    return {
-        "success": True,
-        "action": "eval_suite_export",
-        "case_count": len(tests),
-        "path": str(PROMPTFOO_EVALS_PATH),
-        "config_path": str(PROMPTFOO_CONFIG_PATH),
-        "command_hint": f"promptfoo eval -c {PROMPTFOO_CONFIG_PATH}",
-    }
+    return _export_promptfoo_suite(
+        proposals_path=SELF_IMPROVE_PROPOSALS_PATH,
+        trace_log_path=TRACE_LOG_PATH,
+        config_path=PROMPTFOO_CONFIG_PATH,
+        evals_path=PROMPTFOO_EVALS_PATH,
+    )
 
 
 def _normalized_event_family(event: Dict[str, Any]) -> str:
