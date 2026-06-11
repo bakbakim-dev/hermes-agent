@@ -223,6 +223,20 @@ def _get_enabled_plugins() -> Optional[set]:
         return None
 
 
+def _get_auto_enabled_bundled_plugins() -> set:
+    """Read the bundled plugin auto-enable allow-list from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        plugins_cfg = config.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            return set()
+        auto_enabled = plugins_cfg.get("auto_enable_bundled", [])
+        return set(auto_enabled) if isinstance(auto_enabled, list) else set()
+    except Exception:
+        return set()
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -907,6 +921,7 @@ class PluginManager:
         # don't collide even when both manifests say ``name: openai``.
         disabled = _get_disabled_plugins()
         enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
+        auto_enabled_bundled = _get_auto_enabled_bundled_plugins()
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
@@ -952,15 +967,13 @@ class PluginManager:
                 )
                 continue
 
-            # Built-in backends auto-load — they ship with hermes and must
-            # just work. Selection among them (e.g. which image_gen backend
-            # services calls) is driven by ``<category>.provider`` config,
-            # enforced by the tool wrapper.
-            #
-            # Bundled platform plugins (gateway adapters like IRC) auto-load
-            # for the same reason: every platform Hermes ships must be
-            # available out of the box without the user having to opt in.
-            if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
+            # Auto-load only a narrow configured subset of bundled
+            # backends/platforms. Everything else remains opt-in.
+            if (
+                manifest.source == "bundled"
+                and manifest.kind in {"backend", "platform"}
+                and (lookup_key in auto_enabled_bundled or manifest.name in auto_enabled_bundled)
+            ):
                 self._load_plugin(manifest)
                 continue
 

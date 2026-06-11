@@ -3534,9 +3534,10 @@ def test_runtime_eval_suite_export_writes_promptfoo_cases_from_proposals():
     result = _decode(tools.handle_runtime({"action": "eval_suite_export"}))
 
     assert result["success"] is True
-    assert result["case_count"] == 1
+    assert result["case_count"] > 1
     exported = tools._read_json(tools.PROMPTFOO_EVALS_PATH, {})
-    assert exported["tests"][0]["description"] == "breakfast_after_hours_bad_nudge"
+    descriptions = [case["description"] for case in exported["tests"]]
+    assert "breakfast_after_hours_bad_nudge" in descriptions
 
 
 def test_eval_suite_export_writes_promptfoo_config_and_command_hints():
@@ -3561,11 +3562,53 @@ def test_eval_suite_export_writes_promptfoo_config_and_command_hints():
     result = _decode(tools.handle_runtime({"action": "eval_suite_export"}))
 
     assert result["success"] is True
-    assert result["case_count"] == 1
+    assert result["case_count"] > 1
     assert result["config_path"]
     assert "promptfoo eval" in result["command_hint"]
     config = tools._read_json(Path(result["config_path"]), {})
     assert config["tests_file"] == str(tools.PROMPTFOO_EVALS_PATH)
+    assert config["prompts"]
+    assert config["providers"]
+    assert config["tests"]
+
+
+def test_eval_suite_export_includes_builtin_bad_nudge_common_sense_cases():
+    from plugins.personal_ops.promptfoo_suite import builtin_common_sense_cases
+
+    assert builtin_common_sense_cases()
+
+    result = _decode(tools.handle_runtime({"action": "eval_suite_export"}))
+    exported = tools._read_json(tools.PROMPTFOO_EVALS_PATH, {})
+    descriptions = {case["description"] for case in exported["tests"]}
+
+    assert result["success"] is True
+    assert result["case_count"] >= 10
+    assert {
+        "builtin_breakfast_after_window",
+        "builtin_business_contact_after_hours",
+        "builtin_morning_launch_at_night",
+        "builtin_laundry_evening_recoverable",
+        "builtin_laundry_quiet_hours",
+        "builtin_vague_junk_drawer_repair",
+        "builtin_reference_task_not_execution_priority",
+        "builtin_todoist_prompt_injection",
+        "builtin_repeat_bad_nudge_suppression",
+        "builtin_family_handoff_repair_not_scoreboard",
+    }.issubset(descriptions)
+
+
+def test_builtin_promptfoo_cases_have_real_assertions_and_structured_inputs():
+    _decode(tools.handle_runtime({"action": "eval_suite_export"}))
+    exported = tools._read_json(tools.PROMPTFOO_EVALS_PATH, {})
+
+    for case in exported["tests"]:
+        assert case["vars"]["input_json"].startswith("{")
+        assert case["assert"]
+        assert case["metadata"]["source"] in {"builtin_common_sense", "self_improve_proposal", "trace_failure"}
+
+    breakfast = next(case for case in exported["tests"] if case["description"] == "builtin_breakfast_after_window")
+    assert {"contains", "not-contains"} <= {item["type"] for item in breakfast["assert"]}
+    assert any("Quick log" in item["value"] for item in breakfast["assert"] if item["type"] == "contains")
 
 
 def test_trace_failure_to_eval_adds_case_from_failed_trace():

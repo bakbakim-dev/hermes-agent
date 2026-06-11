@@ -71,6 +71,18 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_security_privacy_and_plugin_defaults_are_tight(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+
+        assert config["tool_loop_guardrails"]["hard_stop_enabled"] is True
+        assert config["security"]["tirith_fail_open"] is False
+        assert config["privacy"]["redact_pii"] is True
+        assert config["sessions"]["auto_prune"] is True
+        assert config["sessions"]["retention_days"] == 30
+        assert config["plugins"]["enabled"] == []
+        assert "personal-ops" in config["plugins"]["auto_enable_bundled"]
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

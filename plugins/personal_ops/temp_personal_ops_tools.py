@@ -43,6 +43,12 @@ from .runtime_context_tools import runtime_profile_prune_plan as _runtime_profil
 from .runtime_context_tools import runtime_secret_inventory as _runtime_secret_inventory
 from .runtime_context_tools import runtime_tool_router_simulate as _runtime_tool_router_simulate
 from .runtime_context_tools import runtime_tool_router_status as _runtime_tool_router_status
+from .promptfoo_suite import (
+    build_promptfoo_config as _build_promptfoo_config,
+    builtin_common_sense_cases as _promptfoo_builtin_common_sense_cases,
+    dedupe_cases as _promptfoo_dedupe_cases,
+    promptfoo_case as _promptfoo_case,
+)
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
 APPROVALS_PATH = HERMES_HOME / "personal_ops_approvals.json"
@@ -8622,22 +8628,24 @@ def _runtime_trace_event(args: Dict[str, Any]) -> Dict[str, Any]:
 def _runtime_eval_suite_export(args: Dict[str, Any]) -> Dict[str, Any]:
     del args
     proposals = list((_self_improve_proposals_read().get("proposals") or []))
-    tests: List[Dict[str, Any]] = []
+    tests: List[Dict[str, Any]] = _promptfoo_builtin_common_sense_cases()
     for proposal in proposals:
         eval_case = dict(proposal.get("eval_case") or {})
         if not eval_case:
             continue
+        input_state = dict(eval_case.get("input") or {})
         tests.append(
-            {
-                "description": str(eval_case.get("name") or proposal.get("proposal_id") or "unnamed_eval"),
-                "vars": dict(eval_case.get("input") or {}),
-                "assert": [{"type": "contains", "value": str(eval_case.get("expected_behavior") or "").strip()}],
-                "metadata": {
+            _promptfoo_case(
+                description=str(eval_case.get("name") or proposal.get("proposal_id") or "unnamed_eval"),
+                input_state=input_state,
+                assertions=[{"type": "contains", "value": str(eval_case.get("expected_behavior") or "").strip()}],
+                metadata={
+                    "source": "self_improve_proposal",
                     "proposal_id": proposal.get("proposal_id"),
                     "kind": proposal.get("kind"),
                     "task_title": proposal.get("task_title"),
                 },
-            }
+            )
         )
     traces = _read_jsonl_recent(TRACE_LOG_PATH, limit=100)
     for trace in traces:
@@ -8648,28 +8656,25 @@ def _runtime_eval_suite_export(args: Dict[str, Any]) -> Dict[str, Any]:
         if not expected:
             continue
         tests.append(
-            {
-                "description": f"trace_failure_{trace.get('trace_id')}",
-                "vars": {
+            _promptfoo_case(
+                description=f"trace_failure_{trace.get('trace_id')}",
+                input_state={
                     "task": str(data.get("task_title") or ""),
                     "task_type": str(data.get("task_type") or ""),
                     "current_time": str(data.get("current_time") or ""),
                 },
-                "assert": [{"type": "contains", "value": expected}],
-                "metadata": {
+                assertions=[{"type": "contains", "value": expected}],
+                metadata={
                     "source": "trace_failure",
                     "trace_id": trace.get("trace_id"),
                     "trace_type": trace.get("trace_type"),
                 },
-            }
+            )
         )
+    tests = _promptfoo_dedupe_cases(tests)
     payload = {"tests": tests}
     _write_json(PROMPTFOO_EVALS_PATH, payload)
-    config = {
-        "description": "Hermes promptfoo export",
-        "tests_file": str(PROMPTFOO_EVALS_PATH),
-        "default_assert_type": "contains",
-    }
+    config = _build_promptfoo_config(tests=tests, evals_path=PROMPTFOO_EVALS_PATH)
     _write_json(PROMPTFOO_CONFIG_PATH, config)
     return {
         "success": True,

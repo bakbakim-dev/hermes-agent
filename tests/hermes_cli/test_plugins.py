@@ -143,6 +143,42 @@ class TestPluginDiscovery:
 
         assert "proj_plugin" not in mgr._plugins
 
+    def test_bundled_auto_enable_scope_does_not_enable_standalone_by_default(self, tmp_path, monkeypatch):
+        """Bundled backend/platform plugins can be scoped on without enabling standalone plugins."""
+        bundled_dir = tmp_path / "bundled"
+        backend = _make_plugin_dir(
+            bundled_dir,
+            "personal-ops",
+            manifest_extra={"kind": "backend"},
+            auto_enable=False,
+        )
+        standalone = _make_plugin_dir(
+            bundled_dir,
+            "google_meet",
+            manifest_extra={"kind": "standalone"},
+            auto_enable=False,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        (tmp_path / "home" / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled: []\n"
+            "  auto_enable_bundled:\n"
+            "    - personal-ops\n",
+            encoding="utf-8",
+        )
+
+        mgr = PluginManager()
+        monkeypatch.setattr(mgr, "_scan_directory", lambda path, source, **kwargs: [
+            PluginManifest(name="personal-ops", kind="backend", source="bundled", path=str(backend), key="personal-ops"),
+            PluginManifest(name="google_meet", kind="standalone", source="bundled", path=str(standalone), key="google_meet"),
+        ] if source == "bundled" else [])
+        monkeypatch.setattr(mgr, "_scan_entry_points", lambda: [])
+        mgr.discover_and_load()
+
+        assert mgr._plugins["personal-ops"].enabled is True
+        assert mgr._plugins["google_meet"].enabled is False
+
     def test_discover_is_idempotent(self, tmp_path, monkeypatch):
         """Calling discover_and_load() twice does not duplicate plugins."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

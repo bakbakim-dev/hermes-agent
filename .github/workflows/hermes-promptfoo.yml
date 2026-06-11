@@ -1,0 +1,78 @@
+name: Hermes Promptfoo Eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_eval:
+        description: "Run model eval after validating the config"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  promptfoo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ~/.cache/promptfoo
+          key: promptfoo-0.121.15-${{ runner.os }}
+
+      - name: Install Hermes package
+        run: python -m pip install -e .
+
+      - name: Install promptfoo
+        run: npm install -g promptfoo@0.121.15 --no-audit --no-fund --progress=false
+
+      - name: Export Hermes promptfoo suite
+        run: python scripts/export_promptfoo_suite.py --out-dir .promptfoo
+
+      - name: Validate promptfoo config
+        run: promptfoo validate -c .promptfoo/promptfoo_config.json
+
+      - name: Run promptfoo eval
+        if: ${{ inputs.run_eval == 'true' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROMPTFOO_API_KEY: ${{ secrets.PROMPTFOO_API_KEY }}
+          PROMPTFOO_DISABLE_TELEMETRY: "1"
+          CI: "1"
+        run: |
+          set -euo pipefail
+          SHARE_FLAG=""
+          if [ -n "${PROMPTFOO_API_KEY:-}" ]; then
+            SHARE_FLAG="--share"
+          fi
+          promptfoo eval \
+            -c .promptfoo/promptfoo_config.json \
+            -o .promptfoo/results.json \
+            -j 1 \
+            --no-progress-bar \
+            $SHARE_FLAG
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hermes-promptfoo-artifacts
+          path: |
+            .promptfoo/promptfoo_config.json
+            .promptfoo/promptfoo_eval_cases.json
+            .promptfoo/results.json
+          if-no-files-found: ignore
