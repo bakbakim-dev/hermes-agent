@@ -2561,6 +2561,44 @@ def test_runtime_event_ingest_suppresses_late_wake_telegram(monkeypatch):
     assert "Family handoff" in result["message"]
 
 
+def test_runtime_event_ingest_keeps_low_confidence_windows_logon_silent(monkeypatch):
+    class _FixedDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 5, 19, 12, 44, tzinfo=tz)
+
+    monkeypatch.setattr(tools, "datetime", _FixedDatetime)
+    monkeypatch.setattr(
+        tools,
+        "_focus_guard_read_state",
+        lambda: {
+            "status": "needs_focus",
+            "most_important_task": {"content": "Laundry check"},
+            "suspicious_tasks": [],
+        },
+    )
+    monkeypatch.setattr(tools, "_telegram_messages_allowed_now", lambda now_hour=None: True)
+    sent = []
+    monkeypatch.setattr(tools, "_focus_guard_send_telegram_message", lambda text, **kwargs: sent.append(text) or {"ok": True})
+
+    result = _decode(
+        tools.handle_runtime(
+            {
+                "action": "event_ingest",
+                "event_type": "wake",
+                "source": "windows-logon-trigger",
+                "send_telegram": True,
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["sent"] is False
+    assert result["suppressed_reason"] == "presence_signal_only"
+    assert sent == []
+    assert "possible activity" in result["message"]
+
+
 def test_runtime_event_ingest_records_presence_confidence_without_claiming_true_power_on(monkeypatch):
     monkeypatch.setattr(
         tools,
@@ -6467,6 +6505,29 @@ def test_morning_repair_loop(monkeypatch):
     assert "Morning Repair Loop" in sent[0]
     assert "Overdue clickup review" in sent[0]
     assert state.get("last_briefing_had_debt") is False
+
+
+def test_work_window_transition_stays_quiet_without_task_debt(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(tools, "_runtime_local_tz", lambda: ZoneInfo("America/Edmonton"))
+
+    sent = []
+    monkeypatch.setattr(tools, "_safe_send_telegram_message", lambda text, **kw: sent.append(text))
+
+    state = {
+        "day_phase": "evening",
+        "last_briefing_had_debt": False,
+    }
+    monkeypatch.setattr(tools, "_operator_read_state", lambda: state)
+    monkeypatch.setattr(tools, "_operator_write_state", lambda s: state.update(s))
+
+    dt_in = datetime(2026, 5, 23, 9, 0, 0, tzinfo=ZoneInfo("America/Edmonton"))
+    tools._run_scheduler_checks(dt_in)
+
+    assert sent == []
+    assert state.get("day_phase") == "work_window"
 
 
 def test_briefing_feedback_callbacks_stuck(monkeypatch):

@@ -1458,6 +1458,26 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
 
     action = parts[1]
 
+    def _record_callback_outcome(metadata: Optional[Dict[str, Any]] = None) -> None:
+        try:
+            from plugins.personal_ops.nudge_receipts import record_outcome
+
+            message = getattr(query, "message", None)
+            chat = getattr(message, "chat", None)
+            chat_id = getattr(message, "chat_id", None) or getattr(chat, "id", None)
+            message_id = getattr(message, "message_id", None)
+            user = getattr(query, "from_user", None)
+            user_id = getattr(user, "id", None)
+            record_outcome(
+                callback_data=data,
+                chat_id=chat_id,
+                message_id=message_id,
+                user_id=user_id,
+                metadata=metadata,
+            )
+        except Exception:
+            pass
+
     if action == "location":
         await query.answer()
         if len(parts) >= 3:
@@ -1492,6 +1512,42 @@ async def _handle_telegram_callback(platform: Any, query: Any, data: str) -> Non
                 await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
             except Exception as e:
                 await query.answer(text=f"❌ Failed to complete task: {e}")
+
+    elif action == "gym":
+        if len(parts) < 3:
+            await query.answer()
+            return
+
+        gym_action = parts[2]
+        task_id = parts[3] if len(parts) >= 4 else ""
+        if gym_action == "complete" and task_id:
+            try:
+                with _http_client() as client:
+                    url = f"{TODOIST_BASE}/tasks/{task_id}/close"
+                    resp = client.post(url, headers=_todoist_headers())
+                    resp.raise_for_status()
+
+                _record_callback_outcome({"gym_action": "complete", "task_id": task_id})
+                await query.answer(text="Workout confirmed and completed.")
+                text = query.message.text or ""
+                new_text = text + "\n\n<b>Workout confirmed. Todoist task completed.</b>"
+                await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
+            except Exception as e:
+                await query.answer(text=f"Failed to complete workout task: {e}")
+        elif gym_action == "partial":
+            _record_callback_outcome({"gym_action": "partial", "task_id": task_id})
+            await query.answer(text="Logged as partial.")
+            text = query.message.text or ""
+            new_text = text + "\n\n<b>Logged as partial. Todoist was not auto-completed.</b>"
+            await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
+        elif gym_action == "mistake":
+            _record_callback_outcome({"gym_action": "mistake"})
+            await query.answer(text="Marked as a mistaken gym event.")
+            text = query.message.text or ""
+            new_text = text + "\n\n<b>Marked as a mistaken gym event. No Todoist task was completed.</b>"
+            await query.edit_message_text(new_text, parse_mode="HTML", reply_markup=None)
+        else:
+            await query.answer(text="Unknown gym action.")
 
     elif action == "task_defer":
         if len(parts) >= 3:

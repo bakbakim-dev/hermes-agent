@@ -157,6 +157,12 @@ def _outcome_from_callback(callback_data: str) -> str:
         return data.split(":", 1)[1].strip().lower() or "acknowledged"
     if data.startswith("po:task_complete:"):
         return "done"
+    if data.startswith("po:gym:complete:"):
+        return "done"
+    if data.startswith("po:gym:partial:"):
+        return "handled"
+    if data.startswith("po:gym:mistake"):
+        return "bad_nudge"
     if data.startswith("po:task_defer:"):
         return "defer_tomorrow"
     if data.startswith("po:task_delete:"):

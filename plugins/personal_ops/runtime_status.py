@@ -440,6 +440,17 @@ def _presence_confidence_for_event(event_type: str, source: str) -> tuple[float,
     return 0.50, event_type.replace("_", " ")
 
 
+def _is_passive_presence_only_event(event_type: str, source: str) -> bool:
+    source_l = source.lower()
+    if event_type == "wake" and "logon" in source_l:
+        return True
+    if event_type == "desktop_unlocked" and ("windows" in source_l or "unlock" in source_l):
+        return True
+    if event_type == "activitywatch_heartbeat":
+        return True
+    return False
+
+
 def _runtime_write_presence_signal(
     *,
     event_type: str,
@@ -1576,6 +1587,27 @@ def _runtime_handle_activitywatch_heartbeat(args: Dict[str, Any]) -> Dict[str, A
     }
 
 
+GYM_AUTO_COMPLETE_MAX_MINUTES = 150
+
+
+def _gym_session_minutes_from_message(message: str) -> Optional[int]:
+    match = re.search(r"Session length:\s*(\d+)\s*min", message)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _gym_task_id_from_url(url: str) -> str:
+    if "id=" in url:
+        return url.split("id=")[-1]
+    if "/" in url:
+        return url.rstrip("/").split("/")[-1]
+    return url
+
+
 def _runtime_handle_gym_event(args: Dict[str, Any]) -> Dict[str, Any]:
     event_type = str(args.get("event_type") or "").strip().lower()
     if not event_type:
@@ -1591,6 +1623,10 @@ def _runtime_handle_gym_event(args: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             when = None
 
+    buttons: List[Dict[str, str]] = []
+    confirmation_required = False
+    auto_completed = False
+
     if event == "arrived" and _gym_record_arrival is not None:
         message = _gym_record_arrival(source=source, note=note, when=when)
         try:
@@ -1604,18 +1640,28 @@ def _runtime_handle_gym_event(args: Dict[str, Any]) -> Dict[str, Any]:
             if task:
                 try:
                     name, url = task
-                    task_id = url
-                    if "id=" in url:
-                        task_id = url.split("id=")[-1]
-                    elif "/" in url:
-                        task_id = url.rstrip("/").split("/")[-1]
-                    close_res = _execute_todoist({"action": "close_task", "task_id": task_id})
-                    if close_res.get("success"):
-                        message += f"\nAutomatically completed Todoist task: {name}."
+                    task_id = _gym_task_id_from_url(url)
+                    session_minutes = _gym_session_minutes_from_message(message)
+                    if session_minutes is not None and session_minutes > GYM_AUTO_COMPLETE_MAX_MINUTES:
+                        confirmation_required = True
+                        message += (
+                            f"\nYou were at the gym for {session_minutes} min, which is longer than a normal workout window. "
+                            f"I did not auto-complete {name}. Please confirm what happened."
+                        )
+                        buttons = [
+                            {"text": "Completed", "callback_data": f"po:gym:complete:{task_id}"},
+                            {"text": "Partial", "callback_data": f"po:gym:partial:{task_id}"},
+                            {"text": "Mistake", "callback_data": "po:gym:mistake"},
+                        ]
+                    else:
+                        close_res = _execute_todoist({"action": "close_task", "task_id": task_id})
+                        if close_res.get("success"):
+                            auto_completed = True
+                            message += f"\nAutomatically completed Todoist task: {name}."
                 except Exception as e:
                     message += f"\n(Failed to auto-complete Todoist task: {e})"
         try:
-            _safe_send_telegram_message(message, force=True)
+            _safe_send_telegram_message(message, force=True, buttons=buttons or None)
         except Exception:
             pass
     elif event == "report" and _gym_monthly_report is not None:
@@ -1655,6 +1701,8 @@ def _runtime_handle_gym_event(args: Dict[str, Any]) -> Dict[str, Any]:
         "event_type": event_type,
         "summary": message.splitlines()[0] if message else f"Logged gym {event}.",
         "message": message,
+        "confirmation_required": confirmation_required,
+        "auto_completed": auto_completed,
         "presence_signal": {
             "confidence": 1.0,
             "label": f"Gym {event}",
@@ -2083,11 +2131,10 @@ def _run_scheduler_checks(now_dt: datetime) -> None:
                         _safe_send_telegram_message("\n".join(lines), parse_mode="HTML", buttons=buttons)
                         sent_cycle_message = True
                     except Exception:
-                        _safe_send_telegram_message("<b>☀️ Work Window Started</b>\nLet's get focus mode going. Open your first task to start.", parse_mode="HTML")
-                        sent_cycle_message = True
+                        # Stay quiet if a concrete repair brief cannot be built.
+                        pass
                 else:
-                    _safe_send_telegram_message("<b>☀️ Work Window Started</b>\nLet's get focus mode going. Open your first task to start.", parse_mode="HTML")
-                    sent_cycle_message = True
+                    pass
 
             elif current_phase == "quiet_hours":
                 cleanup_res = _run_auto_cleanup_routines()
@@ -2613,6 +2660,7 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
     force_send = bool(args.get("force_send", False))
     now_hour = now.astimezone(_runtime_local_tz()).hour
     can_send_now = _telegram_messages_allowed_now(now_hour) or force_send
+    passive_presence_only = _is_passive_presence_only_event(event_type, source)
     result: Dict[str, Any]
 
     if event_type == "location_update":
@@ -2626,7 +2674,7 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
         message = _runtime_build_wake_briefing(focus_state=focus_state, now=now, source=source)
         sent = False
         suppressed_reason = None
-        if send_telegram and can_send_now:
+        if send_telegram and can_send_now and not (passive_presence_only and not force_send):
             presence_s = _read_json(PRESENCE_STATE_PATH, {})
             location = presence_s.get("location", "home")
             dock_buttons = _build_hermes_dock(location, now)
@@ -2642,15 +2690,17 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
                 pass
             _safe_send_telegram_message(message, parse_mode="HTML", buttons=dock_buttons)
             sent = True
-        elif send_telegram:
+        elif send_telegram and not can_send_now:
             suppressed_reason = "outside_hours"
+        elif send_telegram and passive_presence_only and not force_send:
+            suppressed_reason = "presence_signal_only"
         result = {"handled": True, "event_type": event_type, "message": message, "sent": sent, "suppressed_reason": suppressed_reason, "summary": "Built detailed wake briefing."}
     elif event_type == "desktop_unlocked":
         fresh = _canonical_focus_guard_result(_focus_guard_run_once(filter=str(args.get("filter") or "today | overdue")))
         message = _runtime_build_unlock_briefing(focus_state=fresh, now=now, source=source)
         sent = False
         suppressed_reason = None
-        if send_telegram and can_send_now:
+        if send_telegram and can_send_now and not (passive_presence_only and not force_send):
             presence_s = _read_json(PRESENCE_STATE_PATH, {})
             location = presence_s.get("location", "home")
             dock_buttons = _build_hermes_dock(location, now)
@@ -2666,8 +2716,10 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
                 pass
             _safe_send_telegram_message(message, parse_mode="HTML", buttons=dock_buttons)
             sent = True
-        elif send_telegram:
+        elif send_telegram and not can_send_now:
             suppressed_reason = "outside_hours"
+        elif send_telegram and passive_presence_only and not force_send:
+            suppressed_reason = "presence_signal_only"
         result = {"handled": True, "event_type": event_type, "message": message, "sent": sent, "suppressed_reason": suppressed_reason, "focus_guard": fresh, "summary": "Built detailed unlock briefing."}
     elif event_type in {"leaving_house", "outing_request"}:
         result = _runtime_handle_outing_event(args)
@@ -2676,7 +2728,10 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
     elif event_type == "activitywatch_heartbeat":
         result = _runtime_handle_activitywatch_heartbeat(args)
     elif event_type.startswith("gym."):
-        result = _runtime_handle_gym_event(args)
+        gym_args = {**payload, **args}
+        gym_args["event_type"] = event_type
+        gym_args["source"] = source
+        result = _runtime_handle_gym_event(gym_args)
     elif event_type == "telegram_feedback":
         result = _operator_record_feedback(args, now=now)
     elif event_type.startswith("desktop.distraction_"):
