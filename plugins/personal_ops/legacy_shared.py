@@ -29,11 +29,17 @@ try:
     from .gym_attendance import record_departure as _gym_record_departure
     from .gym_attendance import monthly_report as _gym_monthly_report
     from .gym_attendance import workout_task_for_day as _gym_workout_task_for_day
+    from .gym_attendance import is_location_verified as _gym_is_location_verified
+    from .gym_attendance import source_requires_location_verification as _gym_source_requires_location_verification
+    from .gym_attendance import unverified_shortcut_message as _gym_unverified_shortcut_message
 except Exception:  # pragma: no cover - gym attendance is best-effort
     _gym_record_arrival = None  # type: ignore[assignment]
     _gym_record_departure = None  # type: ignore[assignment]
     _gym_monthly_report = None  # type: ignore[assignment]
     _gym_workout_task_for_day = None  # type: ignore[assignment]
+    _gym_is_location_verified = None  # type: ignore[assignment]
+    _gym_source_requires_location_verification = None  # type: ignore[assignment]
+    _gym_unverified_shortcut_message = None  # type: ignore[assignment]
 
 from .runtime_context_tools import runtime_context_budget_audit as _runtime_context_budget_audit
 from .runtime_context_tools import runtime_context_contributors_report as _runtime_context_contributors_report

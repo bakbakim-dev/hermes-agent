@@ -49,6 +49,28 @@ def workout_task_for_day(when: Optional[datetime] = None) -> Optional[tuple[str,
     return DEFAULT_WORKOUT_TASK_LINKS.get(current.weekday())
 
 
+def is_location_verified(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raw = str(value or "").strip().lower()
+    return raw in {"1", "true", "yes", "y", "verified", "location", "gps"}
+
+
+def source_requires_location_verification(source: str) -> bool:
+    normalized = str(source or "").strip().lower().replace("_", "-")
+    return normalized.startswith("ios-shortcut")
+
+
+def unverified_shortcut_message(kind: str) -> str:
+    noun = "arrival" if kind in {"arrive", "arrived", "arrival"} else "departure"
+    return (
+        f"Gym {noun} not logged: iOS shortcut did not include verified_location=1. "
+        "I am treating this as an unverified automation trigger, not proof you were at the gym."
+    )
+
+
 def _parse_iso(value: str) -> datetime:
     raw = value.strip()
     if raw.endswith("Z"):
@@ -202,8 +224,16 @@ def _latest_open_session(now: Optional[datetime] = None) -> Optional[GymSession]
     return latest
 
 
-def record_arrival(*, source: str = "manual", note: str = "", when: Optional[datetime] = None) -> str:
+def record_arrival(
+    *,
+    source: str = "manual",
+    note: str = "",
+    when: Optional[datetime] = None,
+    location_verified: Any = None,
+) -> str:
     at = (when or _now_local()).astimezone(_local_tz())
+    if source_requires_location_verification(source) and not is_location_verified(location_verified):
+        return unverified_shortcut_message("arrival")
     open_session = _latest_open_session(at)
     if open_session is not None:
         return (
@@ -225,8 +255,16 @@ def record_arrival(*, source: str = "manual", note: str = "", when: Optional[dat
     )
 
 
-def record_departure(*, source: str = "manual", note: str = "", when: Optional[datetime] = None) -> str:
+def record_departure(
+    *,
+    source: str = "manual",
+    note: str = "",
+    when: Optional[datetime] = None,
+    location_verified: Any = None,
+) -> str:
     at = (when or _now_local()).astimezone(_local_tz())
+    if source_requires_location_verification(source) and not is_location_verified(location_verified):
+        return unverified_shortcut_message("departure")
     open_session = _latest_open_session(at)
     _write_event("left", source=source, note=note, when=at)
     if open_session is None:
@@ -311,11 +349,11 @@ def shortcut_instructions() -> str:
         "iOS Shortcut setup with URL automation:\n"
         "1. Create an automation for Arrive at Gym: 11501 Buffalo Run Blvd #131, Tsuut'ina, AB T3T 0E1.\n"
         "2. Add action: Get Contents of URL.\n"
-        "3. URL: https://YOUR-HERMES-DOMAIN/gym?event=arrived&secret=YOUR_SECRET\n"
+        "3. URL: https://YOUR-HERMES-DOMAIN/gym?event=arrived&secret=YOUR_SECRET&verified_location=1\n"
         "4. Add action: Get Dictionary Value workout_task.url from the response.\n"
         "5. If the value exists, Open URL.\n"
         "6. Create another automation for Leave Gym.\n"
-        "7. URL: https://YOUR-HERMES-DOMAIN/gym?event=left&secret=YOUR_SECRET\n\n"
+        "7. URL: https://YOUR-HERMES-DOMAIN/gym?event=left&secret=YOUR_SECRET&verified_location=1\n\n"
         "Workout task links:\n"
         "- Monday Upper A: https://app.todoist.com/app/task/6ghFPf6XX9Hv3h6p\n"
         "- Tuesday Lower A: https://app.todoist.com/app/task/6ghFPf9V2P9xhCPp\n"

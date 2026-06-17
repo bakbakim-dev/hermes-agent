@@ -1608,6 +1608,42 @@ def _gym_task_id_from_url(url: str) -> str:
     return url
 
 
+def _gym_location_verified_arg(args: Dict[str, Any]) -> Any:
+    if "location_verified" in args:
+        return args.get("location_verified")
+    if "verified_location" in args:
+        return args.get("verified_location")
+    return None
+
+
+def _gym_unverified_ios_result(event_type: str, source: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if _gym_source_requires_location_verification is None or _gym_is_location_verified is None:
+        return None
+    if not _gym_source_requires_location_verification(source):
+        return None
+    if _gym_is_location_verified(_gym_location_verified_arg(args)):
+        return None
+    event = event_type.split(".", 1)[-1]
+    if _gym_unverified_shortcut_message is not None:
+        message = _gym_unverified_shortcut_message(event)
+    else:
+        message = "Gym event not logged: iOS shortcut did not include verified_location=1."
+    return {
+        "handled": True,
+        "event_type": event_type,
+        "message": message,
+        "logged": False,
+        "sent": False,
+        "suppressed_reason": "unverified_ios_shortcut",
+        "summary": message,
+        "payload": {
+            "gym_event": event,
+            "source": source,
+            "note": str(args.get("note") or args.get("message") or "").strip(),
+        },
+    }
+
+
 def _runtime_handle_gym_event(args: Dict[str, Any]) -> Dict[str, Any]:
     event_type = str(args.get("event_type") or "").strip().lower()
     if not event_type:
@@ -1628,13 +1664,13 @@ def _runtime_handle_gym_event(args: Dict[str, Any]) -> Dict[str, Any]:
     auto_completed = False
 
     if event == "arrived" and _gym_record_arrival is not None:
-        message = _gym_record_arrival(source=source, note=note, when=when)
+        message = _gym_record_arrival(source=source, note=note, when=when, location_verified=_gym_location_verified_arg(args))
         try:
             _safe_send_telegram_message(message, force=True)
         except Exception:
             pass
     elif event == "left" and _gym_record_departure is not None:
-        message = _gym_record_departure(source=source, note=note, when=when)
+        message = _gym_record_departure(source=source, note=note, when=when, location_verified=_gym_location_verified_arg(args))
         if _gym_workout_task_for_day is not None:
             task = _gym_workout_task_for_day(when)
             if task:
@@ -2624,6 +2660,11 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
 
     # 1. Event Bus Log and Deduplication
     source = str(args.get("source") or "manual").strip()
+    if event_type.startswith("gym."):
+        unverified = _gym_unverified_ios_result(event_type, source, {**payload, **args})
+        if unverified is not None:
+            return unverified
+
     dedupe_key = args.get("dedupe_key")
     dedupe_key_s = str(dedupe_key or "").strip()
     event_state_for_dedupe = _runtime_read_event_state()

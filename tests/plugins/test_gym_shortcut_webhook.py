@@ -34,7 +34,7 @@ def test_gym_shortcut_webhook_logs_arrival(monkeypatch, tmp_path):
     server, port = _start_server(monkeypatch, tmp_path)
     try:
         with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/gym?event=arrived&secret=test-secret",
+            f"http://127.0.0.1:{port}/gym?event=arrived&secret=test-secret&verified_location=1",
             timeout=5,
         ) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
@@ -47,11 +47,29 @@ def test_gym_shortcut_webhook_logs_arrival(monkeypatch, tmp_path):
     assert payload["workout_task"]["url"].startswith("https://app.todoist.com/app/task/")
 
 
+def test_gym_shortcut_webhook_does_not_log_unverified_arrival(monkeypatch, tmp_path):
+    server, port = _start_server(monkeypatch, tmp_path)
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/gym?event=arrived&secret=test-secret",
+            timeout=5,
+        ) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is True
+    assert payload["event"] == "arrived"
+    assert payload["logged"] is False
+    assert "not logged" in payload["message"].lower()
+    assert payload["workout_task"] is None
+
+
 def test_gym_shortcut_webhook_logs_departure(monkeypatch, tmp_path):
     server, port = _start_server(monkeypatch, tmp_path)
     try:
         with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/gym?event=left&secret=test-secret",
+            f"http://127.0.0.1:{port}/gym?event=left&secret=test-secret&verified_location=1",
             timeout=5,
         ) as resp:
             payload = json.loads(resp.read().decode("utf-8"))

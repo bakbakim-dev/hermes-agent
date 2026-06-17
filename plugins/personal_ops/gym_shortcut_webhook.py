@@ -59,15 +59,17 @@ class GymShortcutHandler(BaseHTTPRequestHandler):
             return
 
         event = (query.get("event") or query.get("action") or [""])[0].strip().lower()
+        verified_location = (query.get("verified_location") or query.get("location_verified") or [""])[0]
         if event in {"arrived", "arrive", "in", "checkin", "check-in"}:
-            message = record_arrival(source="ios-shortcut-url")
+            message = record_arrival(source="ios-shortcut-url", location_verified=verified_location)
         elif event in {"left", "leave", "out", "checkout", "check-out"}:
-            message = record_departure(source="ios-shortcut-url")
+            message = record_departure(source="ios-shortcut-url", location_verified=verified_location)
         else:
             _json_response(self, 400, {"ok": False, "error": "invalid_event", "allowed": ["arrived", "left"]})
             return
 
-        task = workout_task_for_day()
+        logged = "not logged" not in message.lower()
+        task = workout_task_for_day() if logged else None
         if task:
             name, url = task
             task_id = url.split("id=")[-1] if "id=" in url else url
@@ -78,7 +80,7 @@ class GymShortcutHandler(BaseHTTPRequestHandler):
             }
         else:
             task_payload = None
-        _json_response(self, 200, {"ok": True, "event": event, "message": message, "workout_task": task_payload})
+        _json_response(self, 200, {"ok": True, "event": event, "logged": logged, "message": message, "workout_task": task_payload})
 
 
 def serve(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:

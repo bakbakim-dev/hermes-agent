@@ -21,14 +21,14 @@ def test_runtime_event_ingest_handles_gym_arrival_and_departure(monkeypatch, tmp
         {
             "event_type": "gym.arrived",
             "source": "ios-shortcut-url",
-            "payload": {"when": "2026-05-22T18:00:00-06:00"},
+            "payload": {"when": "2026-05-22T18:00:00-06:00", "location_verified": True},
         }
     )
     leave = personal_ops._runtime_event_ingest(
         {
             "event_type": "gym.left",
             "source": "ios-shortcut-url",
-            "payload": {"when": "2026-05-22T19:15:00-06:00"},
+            "payload": {"when": "2026-05-22T19:15:00-06:00", "location_verified": True},
         }
     )
 
@@ -39,6 +39,28 @@ def test_runtime_event_ingest_handles_gym_arrival_and_departure(monkeypatch, tmp
     assert leave["event_type"] == "gym.left"
     assert "Logged gym departure" in leave["message"]
     assert (tmp_path / ".hermes" / "personal_ops" / "gym_attendance.jsonl").exists()
+
+
+def test_unverified_ios_shortcut_gym_arrival_is_not_logged_or_sent(monkeypatch, tmp_path):
+    personal_ops = _module(monkeypatch, tmp_path)
+    sent = []
+    monkeypatch.setattr(personal_ops, "_safe_send_telegram_message", lambda text, **kw: sent.append((text, kw)) or {"ok": True})
+
+    arrive = personal_ops._runtime_event_ingest(
+        {
+            "event_type": "gym.arrived",
+            "source": "ios-shortcut",
+            "payload": {"when": "2026-06-16T18:00:00-06:00"},
+        }
+    )
+
+    assert arrive["handled"] is True
+    assert arrive["logged"] is False
+    assert arrive["sent"] is False
+    assert arrive["suppressed_reason"] == "unverified_ios_shortcut"
+    assert "not logged" in arrive["message"].lower()
+    assert sent == []
+    assert not (tmp_path / ".hermes" / "personal_ops" / "gym_attendance.jsonl").exists()
 
 
 def test_long_gym_departure_asks_before_completing_todoist(monkeypatch, tmp_path):
@@ -52,14 +74,14 @@ def test_long_gym_departure_asks_before_completing_todoist(monkeypatch, tmp_path
         {
             "event_type": "gym.arrived",
             "source": "ios-shortcut-url",
-            "payload": {"when": "2026-06-16T18:00:00-06:00"},
+            "payload": {"when": "2026-06-16T18:00:00-06:00", "location_verified": True},
         }
     )
     leave = personal_ops._runtime_event_ingest(
         {
             "event_type": "gym.left",
             "source": "ios-shortcut-url",
-            "payload": {"when": "2026-06-16T22:00:00-06:00"},
+            "payload": {"when": "2026-06-16T22:00:00-06:00", "location_verified": True},
         }
     )
 

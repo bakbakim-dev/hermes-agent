@@ -32,6 +32,25 @@ def test_gym_arrival_and_departure_create_complete_session(monkeypatch, tmp_path
     assert sessions[0].duration.total_seconds() == 75 * 60
 
 
+def test_ios_shortcut_gym_events_require_location_verification(monkeypatch, tmp_path):
+    gym = _module(monkeypatch, tmp_path)
+
+    arrive = datetime.fromisoformat("2026-06-16T18:00:00-06:00")
+    leave = datetime.fromisoformat("2026-06-16T22:00:00-06:00")
+
+    arrival_msg = gym.record_arrival(source="ios-shortcut", when=arrive)
+    departure_msg = gym.record_departure(source="ios-shortcut", when=leave)
+
+    assert "not logged" in arrival_msg.lower()
+    assert "verified_location=1" in arrival_msg
+    assert "not logged" in departure_msg.lower()
+    assert gym.build_sessions() == []
+
+    verified_msg = gym.record_arrival(source="ios-shortcut", when=arrive, location_verified=True)
+    assert "Logged gym arrival" in verified_msg
+    assert len(gym.build_sessions()) == 1
+
+
 def test_monthly_report_summarizes_sessions(monkeypatch, tmp_path):
     gym = _module(monkeypatch, tmp_path)
 
