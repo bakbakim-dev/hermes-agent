@@ -63,6 +63,28 @@ def test_unverified_ios_shortcut_gym_arrival_is_not_logged_or_sent(monkeypatch, 
     assert not (tmp_path / ".hermes" / "personal_ops" / "gym_attendance.jsonl").exists()
 
 
+def test_off_schedule_ios_shortcut_gym_arrival_is_not_logged_or_sent(monkeypatch, tmp_path):
+    personal_ops = _module(monkeypatch, tmp_path)
+    sent = []
+    monkeypatch.setattr(personal_ops, "_safe_send_telegram_message", lambda text, **kw: sent.append((text, kw)) or {"ok": True})
+
+    arrive = personal_ops._runtime_event_ingest(
+        {
+            "event_type": "gym.arrived",
+            "source": "ios-shortcut",
+            "payload": {"when": "2026-06-17T18:00:00-06:00", "location_verified": True},
+        }
+    )
+
+    assert arrive["handled"] is True
+    assert arrive["logged"] is False
+    assert arrive["sent"] is False
+    assert arrive["suppressed_reason"] == "off_schedule_ios_shortcut"
+    assert "not one of your scheduled lifting days" in arrive["message"]
+    assert sent == []
+    assert not (tmp_path / ".hermes" / "personal_ops" / "gym_attendance.jsonl").exists()
+
+
 def test_long_gym_departure_asks_before_completing_todoist(monkeypatch, tmp_path):
     personal_ops = _module(monkeypatch, tmp_path)
     sent = []

@@ -27,3 +27,19 @@ def test_runtime_log_hygiene_ignores_small_logs(tmp_path: Path) -> None:
 
     assert result["rotated_count"] == 0
     assert log_path.read_bytes() == b"small"
+
+
+def test_runtime_log_hygiene_prunes_stale_backups_even_when_active_log_is_small(tmp_path: Path) -> None:
+    from plugins.personal_ops.runtime_hygiene import maintain_runtime_logs
+
+    log_path = tmp_path / "activitywatch_forwarder.log"
+    log_path.write_bytes(b"small")
+    (tmp_path / "activitywatch_forwarder.log.1").write_bytes(b"keep")
+    (tmp_path / "activitywatch_forwarder.log.2").write_bytes(b"drop")
+
+    result = maintain_runtime_logs(tmp_path, max_bytes=50, backup_count=1)
+
+    assert result["success"] is True
+    assert result["rotated_count"] == 0
+    assert (tmp_path / "activitywatch_forwarder.log.1").exists()
+    assert not (tmp_path / "activitywatch_forwarder.log.2").exists()

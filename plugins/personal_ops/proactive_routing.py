@@ -19,6 +19,18 @@ PERSONAL_KEYWORDS = {
     "v-taper", "vtaper", "upper", "lower", "exercise", "exercises"
 }
 
+
+def _coerce_mapping(value: Any) -> Dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {"raw": value}
+        return _coerce_mapping(parsed)
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
 def proactive_personal_query_hook(
     session_id: str,
     user_message: str,
@@ -48,17 +60,11 @@ def proactive_personal_query_hook(
             return None
 
         # Parse tool result (either raw dict or json string)
-        if isinstance(res_raw, str):
-            try:
-                res = json.loads(res_raw)
-            except Exception:
-                res = {"raw": res_raw}
-        else:
-            res = dict(res_raw or {})
+        res = _coerce_mapping(res_raw)
 
         # If wrapped inside tool_result, unpack it
         if "result" in res:
-            res = res["result"]
+            res = _coerce_mapping(res["result"])
 
         success = res.get("success") or res.get("ok")
         if not success:

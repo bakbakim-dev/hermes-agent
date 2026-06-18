@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -130,6 +131,19 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+_CRON_DELIVERY_META_PATTERNS = (
+    "unable to directly send",
+    "unable to send",
+    "could not deliver",
+    "i don't have access to",
+    "i don't have a telegram send capability",
+    "no telegram send tool",
+    "send_message tool is not available",
+    "telegram tool is not available",
+    "here is the message you wished to send",
+    "message that would have been sent",
+    "message that should have been sent",
+)
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -145,6 +159,61 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+def _strip_outer_quotes(text: str) -> str:
+    stripped = text.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1].strip()
+    return stripped
+
+
+def _extract_cron_intended_message(text: str) -> str:
+    """Extract a user-facing message from a cron tool-status/meta response."""
+
+    patterns = (
+        r"(?is)(?:here is the message you wished to send|message that would have been sent|message that should have been sent)\s*:?\s*(?:[-_]{3,}\s*)?(?P<body>.+)$",
+        r"(?is)(?:here'?s the crafted message[^:]*|message content above is ready[^:]*):?\s*(?:[-_]{3,}\s*)?(?P<body>.+)$",
+    )
+    body = ""
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            body = match.group("body").strip()
+            break
+    if not body:
+        return ""
+
+    body = re.split(
+        r"(?im)^\s*(?:[-_]{3,}\s*)?(?:\*\*?\s*)?(?:note|result|to fix this|fix|delivery|could not deliver)\b",
+        body,
+        maxsplit=1,
+    )[0].strip()
+    body = re.sub(r"(?m)^\s*>\s?", "", body).strip()
+    body = body.strip("-_ \n\r\t")
+    body = _strip_outer_quotes(body)
+    if any(pattern in body.lower() for pattern in _CRON_DELIVERY_META_PATTERNS):
+        return ""
+    return body
+
+
+def _sanitize_cron_delivery_content(content: str) -> str:
+    """Prevent non-interactive cron tool-status text from reaching the user."""
+
+    text = str(content or "").strip()
+    if not text:
+        return text
+    lowered = text.lower()
+    if not any(pattern in lowered for pattern in _CRON_DELIVERY_META_PATTERNS):
+        return text
+
+    extracted = _extract_cron_intended_message(text)
+    if extracted:
+        logger.warning("Cron delivery meta-output detected; delivering extracted user-facing message only")
+        return extracted
+
+    logger.warning("Cron delivery meta-output detected with no safe message body; suppressing delivery")
+    return SILENT_MARKER
 
 
 @contextmanager
@@ -1862,7 +1931,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                deliver_content = (
+                    _sanitize_cron_delivery_content(final_response)
+                    if success
+                    else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                )
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.

@@ -32,6 +32,8 @@ try:
     from .gym_attendance import is_location_verified as _gym_is_location_verified
     from .gym_attendance import source_requires_location_verification as _gym_source_requires_location_verification
     from .gym_attendance import unverified_shortcut_message as _gym_unverified_shortcut_message
+    from .gym_attendance import off_schedule_shortcut_message as _gym_off_schedule_shortcut_message
+    from .gym_attendance import automated_shortcut_is_off_schedule as _gym_automated_shortcut_is_off_schedule
 except Exception:  # pragma: no cover - gym attendance is best-effort
     _gym_record_arrival = None  # type: ignore[assignment]
     _gym_record_departure = None  # type: ignore[assignment]
@@ -40,6 +42,8 @@ except Exception:  # pragma: no cover - gym attendance is best-effort
     _gym_is_location_verified = None  # type: ignore[assignment]
     _gym_source_requires_location_verification = None  # type: ignore[assignment]
     _gym_unverified_shortcut_message = None  # type: ignore[assignment]
+    _gym_off_schedule_shortcut_message = None  # type: ignore[assignment]
+    _gym_automated_shortcut_is_off_schedule = None  # type: ignore[assignment]
 
 from .runtime_context_tools import runtime_context_budget_audit as _runtime_context_budget_audit
 from .runtime_context_tools import runtime_context_contributors_report as _runtime_context_contributors_report

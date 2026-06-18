@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable
 
 
-DEFAULT_MAX_LOG_BYTES = int(os.getenv("HERMES_RUNTIME_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
-DEFAULT_BACKUP_COUNT = int(os.getenv("HERMES_RUNTIME_LOG_BACKUP_COUNT", "3"))
+DEFAULT_MAX_LOG_BYTES = int(os.getenv("HERMES_RUNTIME_LOG_MAX_BYTES", str(2 * 1024 * 1024)))
+DEFAULT_BACKUP_COUNT = int(os.getenv("HERMES_RUNTIME_LOG_BACKUP_COUNT", "1"))
 MANAGED_RUNTIME_LOGS = ("activitywatch_forwarder.log",)
 
 
@@ -31,6 +31,12 @@ def cap_large_runtime_log(
         "error": None,
     }
     try:
+        backup_count = max(1, int(backup_count))
+        for stale_index in range(backup_count + 1, backup_count + 20):
+            stale = _backup_path(path, stale_index)
+            if stale.exists():
+                stale.unlink()
+
         if not path.exists() or not path.is_file():
             return result
         size = path.stat().st_size
@@ -39,7 +45,6 @@ def cap_large_runtime_log(
             return result
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        backup_count = max(1, int(backup_count))
         oldest = _backup_path(path, backup_count)
         if oldest.exists():
             oldest.unlink()

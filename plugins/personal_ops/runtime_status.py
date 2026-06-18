@@ -188,6 +188,113 @@ def _runtime_provider_chain(path: Path = HERMES_CONFIG_PATH) -> Dict[str, Any]:
     }
 
 
+def _runtime_git_identity(repo_path: Optional[Path] = None) -> Dict[str, Any]:
+    root = repo_path or Path(os.getenv("HERMES_REPO_ROOT") or Path(__file__).resolve().parents[2])
+    git_dir = root / ".git"
+    if not git_dir.exists():
+        return {"repo_path": str(root), "available": False, "working_tree_state": "not_checked"}
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            ref = head.split(" ", 1)[1].strip()
+            commit_path = git_dir / ref
+            commit = commit_path.read_text(encoding="utf-8").strip() if commit_path.exists() else ""
+            branch = ref.rsplit("/", 1)[-1]
+        else:
+            commit = head
+            branch = None
+        return {
+            "repo_path": str(root),
+            "available": True,
+            "branch": branch,
+            "commit": commit[:12] if commit else None,
+            "commit_full": commit or None,
+            "working_tree_state": "not_checked",
+            "state_note": "Git HEAD is read without shell access; uncommitted runtime overlays are not evaluated here.",
+        }
+    except Exception as exc:
+        return {"repo_path": str(root), "available": False, "error": str(exc), "working_tree_state": "not_checked"}
+
+
+def _runtime_hermes_version_status(args: Dict[str, Any]) -> Dict[str, Any]:
+    del args
+    try:
+        from hermes_cli import __release_date__, __version__
+    except Exception:
+        __version__ = "unknown"  # type: ignore[assignment]
+        __release_date__ = None  # type: ignore[assignment]
+
+    provider_chain = _runtime_provider_chain()
+    git_identity = _runtime_git_identity()
+    primary = dict(provider_chain.get("primary") or {})
+    provider = primary.get("provider") or "unknown"
+    model = primary.get("model") or "unknown"
+    return {
+        "success": True,
+        "action": "hermes_version_status",
+        "hermes": {
+            "package": "hermes-agent",
+            "version": __version__,
+            "release_date": __release_date__,
+        },
+        "runtime": {
+            "pid": os.getpid(),
+            "cwd": str(Path.cwd()),
+            "hermes_home": str(HERMES_HOME),
+        },
+        "git": git_identity,
+        "provider_chain": provider_chain,
+        "summary": (
+            f"Hermes Agent {__version__}"
+            + (f" ({__release_date__})" if __release_date__ else "")
+            + f"; primary model config: {provider}/{model}."
+        ),
+    }
+
+
+def _runtime_hermes_update_request(args: Dict[str, Any]) -> Dict[str, Any]:
+    version_status = _runtime_hermes_version_status({})
+    upstream = _runtime_upstream_status(
+        hours=int(args.get("hours") or 24),
+        repo_path=Path(str(args.get("repo_path"))) if args.get("repo_path") else None,
+    )
+    behind = int(((upstream.get("local") or {}).get("behind")) or 0)
+    recent_count = int(upstream.get("recent_commit_count") or 0)
+    updates_available = bool(behind > 0 or recent_count > 0)
+    recommended_response = (
+        "I can help start a Hermes update, but I cannot silently mutate code or deploy from Telegram. "
+        "Updates are approval-gated: check upstream, create a branch/plan, run tests, show the diff, "
+        "then deploy only after approval."
+    )
+    if not updates_available:
+        recommended_response = (
+            f"{recommended_response}\n\nCurrent check: Hermes appears current against the configured upstream "
+            f"(behind={behind}, recent upstream commits in window={recent_count})."
+        )
+    else:
+        recommended_response = (
+            f"{recommended_response}\n\nCurrent check: upstream changes may be available "
+            f"(behind={behind}, recent upstream commits in window={recent_count}). "
+            "Safe next move: create a GitOps update proposal, not apply it blindly."
+        )
+    return {
+        "success": True,
+        "action": "hermes_update_request",
+        "version_status": version_status,
+        "upstream": upstream,
+        "updates_available": updates_available,
+        "approval_required": updates_available,
+        "direct_update_allowed": False,
+        "approval_policy": "code_update_requires_branch_tests_diff_approval_deploy_verify",
+        "safe_next_actions": [
+            {"tool": "personal_runtime", "args": {"action": "upstream_status"}, "purpose": "refresh upstream evidence"},
+            {"tool": "personal_runtime", "args": {"action": "self_improve_pipeline", "mode": "propose"}, "purpose": "create an approval-gated branch/test/diff/rollback plan"},
+        ],
+        "recommended_response": recommended_response,
+        "summary": "Hermes update requests are handled as approval-gated GitOps proposals, not direct Telegram mutations.",
+    }
+
+
 def _runtime_isolation_profile_plan(args: Dict[str, Any]) -> Dict[str, Any]:
     from plugins.personal_ops.orchestration_kernel import profiles_as_dict
 
@@ -1644,6 +1751,46 @@ def _gym_unverified_ios_result(event_type: str, source: str, args: Dict[str, Any
     }
 
 
+def _gym_when_arg(args: Dict[str, Any]) -> Optional[datetime]:
+    raw = args.get("when")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
+
+
+def _gym_off_schedule_ios_result(event_type: str, source: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if _gym_automated_shortcut_is_off_schedule is None:
+        return None
+    when = _gym_when_arg(args)
+    try:
+        if not _gym_automated_shortcut_is_off_schedule(source=source, when=when):
+            return None
+    except Exception:
+        return None
+    event = event_type.split(".", 1)[-1]
+    if _gym_off_schedule_shortcut_message is not None:
+        message = _gym_off_schedule_shortcut_message(event, when)
+    else:
+        message = "Gym event not logged: this is not a scheduled lifting day."
+    return {
+        "handled": True,
+        "event_type": event_type,
+        "message": message,
+        "logged": False,
+        "sent": False,
+        "suppressed_reason": "off_schedule_ios_shortcut",
+        "summary": message,
+        "payload": {
+            "gym_event": event,
+            "source": source,
+            "note": str(args.get("note") or args.get("message") or "").strip(),
+        },
+    }
+
+
 def _runtime_handle_gym_event(args: Dict[str, Any]) -> Dict[str, Any]:
     event_type = str(args.get("event_type") or "").strip().lower()
     if not event_type:
@@ -2664,6 +2811,9 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
         unverified = _gym_unverified_ios_result(event_type, source, {**payload, **args})
         if unverified is not None:
             return unverified
+        off_schedule = _gym_off_schedule_ios_result(event_type, source, {**payload, **args})
+        if off_schedule is not None:
+            return off_schedule
 
     dedupe_key = args.get("dedupe_key")
     dedupe_key_s = str(dedupe_key or "").strip()

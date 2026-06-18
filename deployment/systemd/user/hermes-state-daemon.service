@@ -1,0 +1,16 @@
+[Unit]
+Description=Hermes Personal Ops State Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/hermes-agent
+Environment=HERMES_HOME=/home/ubuntu/.hermes
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/hermes-agent/venv/bin/python -u /home/ubuntu/hermes-agent/plugins/personal_ops/state_daemon.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

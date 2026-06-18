@@ -1,0 +1,16 @@
+[Unit]
+Description=Hermes Personal Ops Decision Daemon
+After=network-online.target hermes-state-daemon.service
+Wants=network-online.target hermes-state-daemon.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/hermes-agent
+Environment=HERMES_HOME=/home/ubuntu/.hermes
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/hermes-agent/venv/bin/python -u /home/ubuntu/hermes-agent/plugins/personal_ops/decision_daemon.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

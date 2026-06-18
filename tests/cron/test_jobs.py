@@ -190,6 +190,19 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestJobCRUD:
+    def test_load_jobs_accepts_utf8_bom(self, tmp_cron_dir):
+        from cron import jobs as cron_jobs
+
+        cron_jobs.ensure_dirs()
+        cron_jobs.JOBS_FILE.write_text(
+            '\ufeff{"jobs": [{"id": "bom-job", "prompt": "ok"}]}',
+            encoding="utf-8",
+        )
+
+        jobs = load_jobs()
+
+        assert jobs == [{"id": "bom-job", "prompt": "ok"}]
+
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")
         assert job["id"]

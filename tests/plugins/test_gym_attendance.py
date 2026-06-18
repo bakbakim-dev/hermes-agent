@@ -51,6 +51,31 @@ def test_ios_shortcut_gym_events_require_location_verification(monkeypatch, tmp_
     assert len(gym.build_sessions()) == 1
 
 
+def test_ios_shortcut_off_day_arrival_is_not_logged(monkeypatch, tmp_path):
+    gym = _module(monkeypatch, tmp_path)
+
+    wednesday = datetime.fromisoformat("2026-06-17T18:00:00-06:00")
+
+    msg = gym.record_arrival(source="ios-shortcut", when=wednesday, location_verified=True)
+
+    assert "not logged" in msg.lower()
+    assert "not one of your scheduled lifting days" in msg
+    assert "geofence noise" in msg
+    assert gym.build_sessions() == []
+
+
+def test_ios_shortcut_off_day_departure_without_open_session_is_not_logged(monkeypatch, tmp_path):
+    gym = _module(monkeypatch, tmp_path)
+
+    saturday = datetime.fromisoformat("2026-06-20T18:00:00-06:00")
+
+    msg = gym.record_departure(source="ios-shortcut", when=saturday, location_verified=True)
+
+    assert "not logged" in msg.lower()
+    assert "not one of your scheduled lifting days" in msg
+    assert gym.build_sessions() == []
+
+
 def test_monthly_report_summarizes_sessions(monkeypatch, tmp_path):
     gym = _module(monkeypatch, tmp_path)
 

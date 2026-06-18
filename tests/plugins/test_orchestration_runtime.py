@@ -47,6 +47,39 @@ def test_runtime_exposes_intention_gate():
     assert result["decision"]["approval_required"] is True
 
 
+def test_runtime_exposes_hermes_version_status():
+    result = _decode(tools.handle_runtime({"action": "hermes_version_status"}))
+
+    assert result["success"] is True
+    assert result["action"] == "hermes_version_status"
+    assert result["hermes"]["package"] == "hermes-agent"
+    assert result["hermes"]["version"]
+    assert "Hermes Agent" in result["summary"]
+    assert "provider_chain" in result
+
+
+def test_runtime_exposes_approval_gated_hermes_update_request(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_runtime_upstream_status",
+        lambda **kwargs: {
+            "local": {"behind": 2, "head": "abc123", "origin_main": "def456"},
+            "recent_commit_count": 1,
+            "recent_commits": [{"sha": "def456", "message": "Improve runtime status"}],
+        },
+    )
+
+    result = _decode(tools.handle_runtime({"action": "hermes_update_request"}))
+
+    assert result["success"] is True
+    assert result["action"] == "hermes_update_request"
+    assert result["updates_available"] is True
+    assert result["direct_update_allowed"] is False
+    assert result["approval_required"] is True
+    assert "approval-gated" in result["recommended_response"]
+    assert "skill" not in result["recommended_response"].lower()
+
+
 def test_runtime_creates_orchestration_job_with_dispatch_plan():
     result = _decode(
         tools.handle_runtime(

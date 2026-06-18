@@ -1800,6 +1800,42 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_not_called()
 
+    def test_tool_limitation_meta_output_extracts_intended_message(self):
+        response = (
+            "I am unable to directly send a Telegram message to Mikail through my current set of tools. "
+            "However, here is the message you wished to send:\n\n"
+            '"Hey Mikail! Just a gentle reminder: no phone during toddler playtime. '
+            'What simple visible reset are you doing tonight?"'
+        )
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert delivered == (
+            "Hey Mikail! Just a gentle reminder: no phone during toddler playtime. "
+            "What simple visible reset are you doing tonight?"
+        )
+        assert "unable to directly send" not in delivered.lower()
+        assert "current set of tools" not in delivered.lower()
+
+    def test_tool_limitation_meta_output_without_message_is_suppressed(self):
+        response = "I don't have a Telegram send capability available in this cron job context."
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_not_called()
+
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \

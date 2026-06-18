@@ -1,0 +1,17 @@
+[Unit]
+Description=Hermes Event Webhook
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/hermes-agent
+Environment=HERMES_HOME=/home/ubuntu/.hermes
+Environment=HERMES_REPO_ROOT=/home/ubuntu/hermes-agent
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/hermes-agent/venv/bin/python -u /home/ubuntu/hermes-agent/scripts/hermes_event_webhook.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

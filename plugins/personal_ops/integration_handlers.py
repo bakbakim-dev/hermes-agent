@@ -411,6 +411,10 @@ def handle_runtime(args: Dict[str, Any], **_: Any) -> str:
                 recent_incidents=incidents,
                 summary=_runtime_summary(service, incidents),
             )
+        if action == "hermes_version_status":
+            return _tool_result(**_runtime_hermes_version_status(args))
+        if action == "hermes_update_request":
+            return _tool_result(**_runtime_hermes_update_request(args))
         if action == "live_watch_status":
             status = _runtime_live_watch_status()
             return _tool_result(success=True, action=action, **status)

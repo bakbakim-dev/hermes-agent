@@ -49,6 +49,10 @@ def workout_task_for_day(when: Optional[datetime] = None) -> Optional[tuple[str,
     return DEFAULT_WORKOUT_TASK_LINKS.get(current.weekday())
 
 
+def is_programmed_workout_day(when: Optional[datetime] = None) -> bool:
+    return workout_task_for_day(when) is not None
+
+
 def is_location_verified(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -69,6 +73,25 @@ def unverified_shortcut_message(kind: str) -> str:
         f"Gym {noun} not logged: iOS shortcut did not include verified_location=1. "
         "I am treating this as an unverified automation trigger, not proof you were at the gym."
     )
+
+
+def off_schedule_shortcut_message(kind: str, when: Optional[datetime] = None) -> str:
+    current = (when or _now_local()).astimezone(_local_tz())
+    noun = "arrival" if kind in {"arrive", "arrived", "arrival"} else "departure"
+    day_name = current.strftime("%A")
+    return (
+        f"Gym {noun} not logged: {day_name} is not one of your scheduled lifting days "
+        "(Monday, Tuesday, Thursday, Friday). I am treating this as nearby-place/geofence noise, "
+        "not proof you went to the gym."
+    )
+
+
+def automated_shortcut_is_off_schedule(
+    *,
+    source: str,
+    when: Optional[datetime] = None,
+) -> bool:
+    return source_requires_location_verification(source) and not is_programmed_workout_day(when)
 
 
 def _parse_iso(value: str) -> datetime:
@@ -234,6 +257,8 @@ def record_arrival(
     at = (when or _now_local()).astimezone(_local_tz())
     if source_requires_location_verification(source) and not is_location_verified(location_verified):
         return unverified_shortcut_message("arrival")
+    if automated_shortcut_is_off_schedule(source=source, when=at):
+        return off_schedule_shortcut_message("arrival", at)
     open_session = _latest_open_session(at)
     if open_session is not None:
         return (
@@ -266,6 +291,8 @@ def record_departure(
     if source_requires_location_verification(source) and not is_location_verified(location_verified):
         return unverified_shortcut_message("departure")
     open_session = _latest_open_session(at)
+    if automated_shortcut_is_off_schedule(source=source, when=at) and open_session is None:
+        return off_schedule_shortcut_message("departure", at)
     _write_event("left", source=source, note=note, when=at)
     if open_session is None:
         return f"Logged gym departure: {_fmt(at, '%b %d, %I:%M %p')}. I did not see a matching recent arrival."
