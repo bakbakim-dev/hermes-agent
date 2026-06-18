@@ -21,10 +21,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_CANONICAL_TIMEZONE_ALIASES = {
-    "Canada/Mountain": "America/Edmonton",
-}
-
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -47,7 +43,7 @@ def _resolve_timezone_name() -> str:
     # 1. Environment variable (highest priority — set by Supervisor, etc.)
     tz_env = os.getenv("HERMES_TIMEZONE", "").strip()
     if tz_env:
-        return _canonicalize_timezone_name(tz_env)
+        return tz_env
 
     # 2. config.yaml ``timezone`` key
     try:
@@ -58,16 +54,11 @@ def _resolve_timezone_name() -> str:
                 cfg = yaml.safe_load(f) or {}
             tz_cfg = cfg.get("timezone", "")
             if isinstance(tz_cfg, str) and tz_cfg.strip():
-                return _canonicalize_timezone_name(tz_cfg.strip())
+                return tz_cfg.strip()
     except Exception:
         pass
 
     return ""
-
-
-def _canonicalize_timezone_name(name: str) -> str:
-    """Normalize known aliases to a canonical IANA timezone string."""
-    return _CANONICAL_TIMEZONE_ALIASES.get(name, name)
 
 
 def _get_zoneinfo(name: str) -> Optional[ZoneInfo]:
@@ -98,7 +89,12 @@ def get_timezone() -> Optional[ZoneInfo]:
 
 
 def reset_cache() -> None:
-    """Clear cached timezone resolution so config/env changes take effect."""
+    """Clear the cached timezone so the next call re-resolves it.
+
+    Call this after the configured timezone may have changed (e.g. after a
+    config edit or ``HERMES_TIMEZONE`` update) to force ``get_timezone()`` /
+    ``now()`` to read the new value instead of the value cached at first use.
+    """
     global _cached_tz, _cached_tz_name, _cache_resolved
     _cached_tz = None
     _cached_tz_name = None
@@ -118,49 +114,4 @@ def now() -> datetime:
     # No timezone configured — use server-local (still tz-aware)
     return datetime.now().astimezone()
 
-
-def _format_utc_offset(dt: datetime) -> str:
-    """Return +HH:MM or -HH:MM for a timezone-aware datetime."""
-    offset = dt.strftime("%z")
-    if len(offset) == 5:
-        return f"{offset[:3]}:{offset[3:]}"
-    return offset or "local"
-
-
-def format_current_time_context() -> str:
-    """Return an API-only context line with exact local time for the model."""
-    current = now()
-    tz = get_timezone()
-    if tz is not None and _cached_tz_name:
-        tz_label = _cached_tz_name
-    else:
-        tz_label = current.tzname() or "server-local"
-
-    from datetime import timedelta
-    today_str = current.strftime('%A, %B %d, %Y')
-    tomorrow_str = (current + timedelta(days=1)).strftime('%A, %B %d, %Y')
-    yesterday_str = (current - timedelta(days=1)).strftime('%A, %B %d, %Y')
-
-    post_midnight_hint = ""
-    if 0 <= current.hour < 5:
-        post_midnight_hint = (
-            "⚠️ CRITICAL POST-MIDNIGHT CONTEXT:\n"
-            f"The current local hour is {current.hour:02d}:{current.minute:02d} AM. Since it is past midnight, when the user says 'tomorrow' or 'today', they may "
-            "be thinking in terms of their waking cycle (meaning 'this morning/later today' when they wake up). "
-            "Please check both: the upcoming waking morning (today, calendar "
-            f"{today_str}) AND the literal calendar tomorrow (tomorrow, calendar {tomorrow_str}). "
-            "Be explicitly clear in your response about which day you are referring to (e.g. 'this morning, Saturday' vs 'tomorrow, Sunday').\n\n"
-        )
-
-    return (
-        "Current local time: "
-        f"{current.strftime('%Y-%m-%d %H:%M %A')} "
-        f"{tz_label} ({_format_utc_offset(current)})\n"
-        f"Today is {today_str}.\n"
-        f"Tomorrow is {tomorrow_str}.\n"
-        f"Yesterday was {yesterday_str}.\n\n"
-        f"{post_midnight_hint}"
-        "Use these values for relative dates and times unless the user "
-        "explicitly gives another timezone. Always verify that calendar date numbers match the weekday names (e.g. Friday is May 22, Saturday is May 23, Sunday is May 24)."
-    )
 

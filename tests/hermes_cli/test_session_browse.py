@@ -6,12 +6,9 @@ Covers:
 - Argument parser registration
 """
 
-import os
 import time
-import importlib.util
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from hermes_cli.main import _session_browse_picker
 
@@ -246,16 +243,10 @@ class TestSessionBrowsePicker:
 # ─── Curses-based picker (mocked curses) ────────────────────────────────────
 
 class TestCursesBrowse:
-    pytestmark = pytest.mark.skipif(
-        importlib.util.find_spec("_curses") is None,
-        reason="Python curses module is not available on this platform",
-    )
-
     """Tests for the curses-based interactive picker via simulated key sequences."""
 
     def _run_with_keys(self, sessions, key_sequence):
         """Simulate running the curses picker with a given key sequence."""
-        import curses
 
         # Build a mock stdscr that returns keys from the sequence
         mock_stdscr = MagicMock()
@@ -311,7 +302,6 @@ class TestCursesBrowse:
 
     def test_type_to_filter_then_enter(self):
         """Typing characters filters the list, Enter selects from filtered."""
-        import curses
         sessions = [
             {"id": "s1", "source": "cli", "title": "Alpha project", "preview": "", "last_active": time.time()},
             {"id": "s2", "source": "cli", "title": "Beta project", "preview": "", "last_active": time.time()},
@@ -331,7 +321,6 @@ class TestCursesBrowse:
 
     def test_backspace_removes_filter_char(self):
         """Backspace removes the last character from the filter."""
-        import curses
         sessions = [
             {"id": "s1", "source": "cli", "title": "Alpha", "preview": "", "last_active": time.time()},
             {"id": "s2", "source": "cli", "title": "Beta", "preview": "", "last_active": time.time()},
@@ -343,7 +332,6 @@ class TestCursesBrowse:
 
     def test_escape_clears_filter_first(self):
         """First Esc clears the search text, second Esc exits."""
-        import curses
         sessions = _make_sessions(3)
         # Type "ab" then Esc (clears filter) then Enter (selects first)
         keys = [ord('a'), ord('b'), 27, 10]
@@ -397,11 +385,9 @@ class TestSessionBrowseArgparse:
 
     def test_browse_subcommand_exists(self):
         """hermes sessions browse should be parseable."""
-        from hermes_cli.main import main as _main_entry
 
         # We can't run main(), but we can import and test the parser setup
         # by checking that argparse doesn't error on "sessions browse"
-        import argparse
         # Re-create the parser portion
         # Instead, let's just verify the import works and the function exists
         from hermes_cli.main import _session_browse_picker
