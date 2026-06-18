@@ -68,6 +68,23 @@ def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     assert "Search" not in out  # plain mode stays compact, no descriptions
 
 
+def test_cmd_list_marks_auto_enabled_bundled_plugins(monkeypatch, capsys):
+    entries = [
+        ("personal-ops", "1.0.0", "Personal ops", "bundled", None, "personal-ops"),
+        ("google_meet", "0.2.0", "Meet", "bundled", None, "google_meet"),
+    ]
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_get_auto_enabled_bundled_set", lambda: {"personal-ops"})
+
+    plugins_cmd.cmd_list(_args(plain=True))
+
+    out = capsys.readouterr().out
+    assert "enabled" in next(line for line in out.splitlines() if "personal-ops" in line)
+    assert "not enabled" in next(line for line in out.splitlines() if "google_meet" in line)
+
+
 def test_cmd_list_json_output(monkeypatch, capsys):
     entries = [("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus")]
     monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)

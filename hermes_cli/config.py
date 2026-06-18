@@ -1219,11 +1219,11 @@ DEFAULT_CONFIG = {
     },
 
     # Tool loop guardrails nudge models when they repeat failed or
-    # non-progressing tool calls. Soft warnings are always-on by default;
-    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    # non-progressing tool calls. Soft warnings and hard stops default on;
+    # operators can explicitly opt out per profile when debugging.
     "tool_loop_guardrails": {
         "warnings_enabled": True,
-        "hard_stop_enabled": False,
+        "hard_stop_enabled": True,
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,
@@ -1275,6 +1275,18 @@ DEFAULT_CONFIG = {
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
         "cache_ttl": "5m",
+    },
+
+    # Plugin loading policy. User/project plugins remain opt-in via
+    # plugins.enabled. Bundled plugins listed in auto_enable_bundled may
+    # load by default because they ship with Hermes and are covered by the
+    # repo permission/safety tests.
+    "plugins": {
+        "enabled": [],
+        "disabled": [],
+        "auto_enable_bundled": [
+            "personal-ops",
+        ],
     },
 
     # OpenRouter-specific settings.
@@ -1708,7 +1720,7 @@ DEFAULT_CONFIG = {
 
     # Privacy settings
     "privacy": {
-        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        "redact_pii": True,  # Hash user IDs and strip phone numbers from LLM context by default
     },
     
     # Text-to-speech configuration
@@ -2181,7 +2193,7 @@ DEFAULT_CONFIG = {
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
-        "tirith_fail_open": True,
+        "tirith_fail_open": False,
         "website_blocklist": {
             "enabled": False,
             "domains": [],
@@ -2460,12 +2472,11 @@ DEFAULT_CONFIG = {
         # When true, prune ended sessions older than retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Only touches ended sessions — active sessions are always preserved.
-        # Default false: session history is valuable for search recall, and
-        # silently deleting it could surprise users.  Opt in explicitly.
-        "auto_prune": False,
-        # How many days of ended-session history to keep.  Matches the
-        # default of ``hermes sessions prune``.
-        "retention_days": 90,
+        # Default true: personal gateways should not retain old transcripts
+        # indefinitely. Set false explicitly for archival/search profiles.
+        "auto_prune": True,
+        # How many days of ended-session history to keep by default.
+        "retention_days": 30,
         # VACUUM after a prune that actually deleted rows.  SQLite does not
         # reclaim disk space on DELETE — freed pages are just reused on
         # subsequent INSERTs — so without VACUUM the file stays bloated
@@ -5612,7 +5623,7 @@ _SECURITY_COMMENT = """
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
-#   tirith_fail_open: true
+#   tirith_fail_open: false
 """
 
 _FALLBACK_COMMENT = """

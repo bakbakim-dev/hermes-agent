@@ -50,6 +50,41 @@ def _get_platform_default_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def _home_has_runtime_state(home: Path) -> bool:
+    """Return whether a Hermes home has configuration-bearing markers."""
+    return any(
+        (home / marker).exists()
+        for marker in (
+            "config.yaml",
+            ".env",
+            "active_profile",
+            "profiles",
+            "mcp",
+        )
+    )
+
+
+def _get_windows_legacy_hermes_home(platform_home: Path) -> Path | None:
+    """Use ``~/.hermes`` on Windows when it is the only configured home.
+
+    Hermes now defaults native Windows installs to ``%LOCALAPPDATA%\\hermes``.
+    Older desktop/cloud-operator setups commonly already have their real
+    config in ``~\\.hermes``. If the AppData home has no real config/state
+    markers yet, keep those existing installs attached to their configured
+    home instead of silently showing empty MCP/plugins/memory state.
+    """
+    if sys.platform != "win32":
+        return None
+    legacy_home = Path.home() / ".hermes"
+    if legacy_home == platform_home:
+        return None
+    if not _home_has_runtime_state(legacy_home):
+        return None
+    if _home_has_runtime_state(platform_home):
+        return None
+    return legacy_home
+
+
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: platform-native path).
 
@@ -74,12 +109,14 @@ def get_hermes_home() -> Path:
     if val:
         return Path(val)
 
+    platform_home = _get_platform_default_hermes_home()
+    fallback_home = _get_windows_legacy_hermes_home(platform_home) or platform_home
+
     # Guard: if a non-default profile is sticky-active, warn once that
     # the fallback to the default profile is almost certainly wrong.
     global _profile_fallback_warned
     if not _profile_fallback_warned:
         try:
-            fallback_home = _get_platform_default_hermes_home()
             active_path = fallback_home / "active_profile"
             active = active_path.read_text().strip() if active_path.exists() else ""
         except (UnicodeDecodeError, OSError):
@@ -105,7 +142,7 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return _get_platform_default_hermes_home()
+    return fallback_home
 
 
 def get_default_hermes_root() -> Path:

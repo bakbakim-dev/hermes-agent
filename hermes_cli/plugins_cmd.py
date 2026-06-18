@@ -732,6 +732,20 @@ def _get_enabled_set() -> set:
         return set()
 
 
+def _get_auto_enabled_bundled_set() -> set:
+    """Read bundled plugins that load by default from config.yaml/defaults."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        plugins_cfg = config.get("plugins", {})
+        if not isinstance(plugins_cfg, dict):
+            return set()
+        auto_enabled = plugins_cfg.get("auto_enable_bundled", [])
+        return set(auto_enabled) if isinstance(auto_enabled, list) else set()
+    except Exception:
+        return set()
+
+
 def _save_enabled_set(enabled: set) -> None:
     """Write the enabled plugins list to config.yaml."""
     from hermes_cli.config import load_config, save_config
@@ -925,16 +939,61 @@ def _discover_all_plugins() -> list:
     return list(seen.values())
 
 
-def _plugin_status(name: str, enabled: set, disabled: set, key: str = "") -> str:
+def _plugin_status(
+    name: str,
+    enabled: set,
+    disabled: set,
+    key: str = "",
+    source: str = "",
+    auto_enabled_bundled: set | None = None,
+) -> str:
     """Return the user-facing activation state for a plugin name or key."""
     if name in disabled or key in disabled:
         return "disabled"
     if name in enabled or key in enabled:
         return "enabled"
+    if source == "bundled":
+        auto_enabled_bundled = auto_enabled_bundled or set()
+        if name in auto_enabled_bundled or key in auto_enabled_bundled:
+            return "enabled"
     return "not enabled"
 
 
-def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set) -> list:
+def _plugin_display_status(
+    *,
+    name: str,
+    source: str,
+    kind: str = "",
+    enabled: set,
+    disabled: set,
+    key: str = "",
+    auto_enabled_bundled: set | None = None,
+) -> str:
+    """Return rich-formatted plugin status for tests and legacy callers."""
+    if auto_enabled_bundled is None and source == "bundled" and kind in {"backend", "platform"}:
+        auto_enabled_bundled = {name, key}
+    status = _plugin_status(
+        name,
+        enabled,
+        disabled,
+        key=key,
+        source=source,
+        auto_enabled_bundled=auto_enabled_bundled,
+    )
+    if status == "disabled":
+        return "[red]disabled[/red]"
+    if status == "enabled":
+        return "[green]enabled[/green]"
+    return "[yellow]not enabled[/yellow]"
+
+
+def _filter_plugin_entries(
+    entries: list,
+    args: Any,
+    enabled: set,
+    disabled: set,
+    auto_enabled_bundled: set | None = None,
+) -> list:
     """Apply ``hermes plugins list`` CLI filters."""
     filtered = entries
     if getattr(args, "no_bundled", False) or getattr(args, "user", False):
@@ -942,7 +1001,14 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     if getattr(args, "enabled", False):
         filtered = [
             entry for entry in filtered
-            if _plugin_status(entry[0], enabled, disabled, key=entry[5]) == "enabled"
+            if _plugin_status(
+                entry[0],
+                enabled,
+                disabled,
+                key=entry[5],
+                source=entry[3],
+                auto_enabled_bundled=auto_enabled_bundled,
+            ) == "enabled"
         ]
     return filtered
 
@@ -961,13 +1027,21 @@ def cmd_list(args: Any | None = None) -> None:
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
-    entries = _filter_plugin_entries(entries, args, enabled, disabled)
+    auto_enabled_bundled = _get_auto_enabled_bundled_set()
+    entries = _filter_plugin_entries(entries, args, enabled, disabled, auto_enabled_bundled)
 
     if getattr(args, "json", False):
         payload = [
             {
                 "name": name,
-                "status": _plugin_status(name, enabled, disabled, key=key),
+                "status": _plugin_status(
+                    name,
+                    enabled,
+                    disabled,
+                    key=key,
+                    source=source,
+                    auto_enabled_bundled=auto_enabled_bundled,
+                ),
                 "version": str(version),
                 "description": description,
                 "source": source,
@@ -979,7 +1053,14 @@ def cmd_list(args: Any | None = None) -> None:
 
     if getattr(args, "plain", False):
         for name, version, _description, source, _dir, key in entries:
-            status = _plugin_status(name, enabled, disabled, key=key)
+            status = _plugin_status(
+                name,
+                enabled,
+                disabled,
+                key=key,
+                source=source,
+                auto_enabled_bundled=auto_enabled_bundled,
+            )
             print(f"{status:12} {source:8} {str(version):8} {name}")
         return
 
@@ -995,7 +1076,14 @@ def cmd_list(args: Any | None = None) -> None:
     table.add_column("Source", style="dim")
 
     for name, version, description, source, _dir, key in entries:
-        status_name = _plugin_status(name, enabled, disabled, key=key)
+        status_name = _plugin_status(
+            name,
+            enabled,
+            disabled,
+            key=key,
+            source=source,
+            auto_enabled_bundled=auto_enabled_bundled,
+        )
         if status_name == "disabled":
             status = "[red]disabled[/red]"
         elif status_name == "enabled":

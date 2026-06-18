@@ -1,6 +1,7 @@
 """Tests for hermes_cli configuration management."""
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,11 +27,56 @@ from hermes_cli.config import (
 
 
 class TestGetHermesHome:
-    def test_default_path(self):
+    def test_default_path(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_local_appdata = tmp_path / "LocalAppData"
+        fake_home.mkdir()
+        fake_local_appdata.mkdir()
+        monkeypatch.setattr("hermes_constants.Path.home", lambda: fake_home)
+        monkeypatch.setenv("LOCALAPPDATA", str(fake_local_appdata))
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            if sys.platform == "win32":
+                assert home == fake_local_appdata / "hermes"
+            else:
+                assert home == fake_home / ".hermes"
+
+    def test_windows_uses_existing_legacy_home_when_platform_home_is_empty(
+        self, tmp_path, monkeypatch
+    ):
+        fake_home = tmp_path / "home"
+        fake_local_appdata = tmp_path / "LocalAppData"
+        legacy_home = fake_home / ".hermes"
+        fake_home.mkdir()
+        fake_local_appdata.mkdir()
+        legacy_home.mkdir()
+        (legacy_home / "config.yaml").write_text("mcp_servers: {}\n", encoding="utf-8")
+
+        monkeypatch.setattr("hermes_constants.sys.platform", "win32")
+        monkeypatch.setattr("hermes_constants.Path.home", lambda: fake_home)
+        monkeypatch.setenv("LOCALAPPDATA", str(fake_local_appdata))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        assert get_hermes_home() == legacy_home
+
+    def test_windows_ignores_empty_platform_dirs_when_legacy_home_has_config(
+        self, tmp_path, monkeypatch
+    ):
+        fake_home = tmp_path / "home"
+        platform_home = tmp_path / "LocalAppData" / "hermes"
+        legacy_home = fake_home / ".hermes"
+        (platform_home / "sessions").mkdir(parents=True)
+        (platform_home / "memories").mkdir(parents=True)
+        legacy_home.mkdir(parents=True)
+        (legacy_home / "config.yaml").write_text("mcp_servers: {}\n", encoding="utf-8")
+
+        monkeypatch.setattr("hermes_constants.sys.platform", "win32")
+        monkeypatch.setattr("hermes_constants.Path.home", lambda: fake_home)
+        monkeypatch.setenv("LOCALAPPDATA", str(platform_home.parent))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        assert get_hermes_home() == legacy_home
 
     def test_env_override(self):
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/path"}):
@@ -1014,8 +1060,26 @@ class TestEnvWriteDenylist:
 
     @pytest.fixture(autouse=True)
     def _hermes_home(self, tmp_path, monkeypatch):
+        env_keys_touched_by_tests = {
+            "HERMES_GEMINI_CLIENT_ID",
+            "HERMES_LANGFUSE_PUBLIC_KEY",
+            "HERMES_SPOTIFY_CLIENT_ID",
+            "HERMES_QWEN_BASE_URL",
+            "HERMES_MAX_ITERATIONS",
+            "OPENROUTER_API_KEY",
+            "MY_PLUGIN_TOKEN",
+        }
+        original_values = {
+            key: os.environ.get(key) for key in env_keys_touched_by_tests
+        }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         ensure_hermes_home()
+        yield
+        for key, value in original_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     @pytest.mark.parametrize(
         "denied_key",

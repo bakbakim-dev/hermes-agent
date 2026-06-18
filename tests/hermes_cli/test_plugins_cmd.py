@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

@@ -2958,6 +2958,56 @@ def _runtime_event_ingest(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
+_LIVE_WATCH_STATE_MAX_LIST_ITEMS = 12
+_LIVE_WATCH_STATE_MAX_TEXT_CHARS = 640
+_LIVE_WATCH_STATE_MAX_DEPTH = 8
+_LIVE_WATCH_STATE_DROP_KEYS = {
+    "all_tasks",
+    "completed_tasks",
+    "raw",
+    "raw_completed",
+    "raw_completed_tasks",
+    "raw_payload",
+    "raw_tasks",
+    "raw_updated",
+    "raw_updated_tasks",
+    "todoist_raw",
+}
+
+
+def _compact_live_watch_text(value: str) -> str:
+    if len(value) <= _LIVE_WATCH_STATE_MAX_TEXT_CHARS:
+        return value
+    return value[:_LIVE_WATCH_STATE_MAX_TEXT_CHARS] + "...[truncated]"
+
+
+def _compact_live_watch_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    compacted = _compact_live_watch_value(payload)
+    return compacted if isinstance(compacted, dict) else {}
+
+
+def _compact_live_watch_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    if depth > _LIVE_WATCH_STATE_MAX_DEPTH:
+        return "[truncated-depth]"
+    if isinstance(value, str):
+        return _compact_live_watch_text(value)
+    if isinstance(value, dict):
+        result: Dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            key_s = str(raw_key)
+            key_l = key_s.lower()
+            if key_l in _LIVE_WATCH_STATE_DROP_KEYS or key_l.startswith("raw_"):
+                continue
+            result[key_s] = _compact_live_watch_value(raw_value, key=key_s, depth=depth + 1)
+        return result
+    if isinstance(value, list):
+        return [
+            _compact_live_watch_value(item, key=key, depth=depth + 1)
+            for item in value[:_LIVE_WATCH_STATE_MAX_LIST_ITEMS]
+        ]
+    return value
+
+
 def _runtime_live_watch_run(*, filter: Optional[str] = None, always_on: bool = False) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     # Run scheduler checks (day-phase transitions, sprint timers)
@@ -3012,7 +3062,7 @@ def _runtime_live_watch_run(*, filter: Optional[str] = None, always_on: bool = F
         payload["status_message"] = status_message
     if status_message_error:
         payload["status_message_error"] = status_message_error
-    _write_json(LIVE_WATCH_STATE_PATH, payload)
+    _write_json(LIVE_WATCH_STATE_PATH, _compact_live_watch_payload(payload))
     _append_event(
         "live_watch_run",
         {
@@ -3230,7 +3280,7 @@ def _runtime_self_improve_run() -> Dict[str, Any]:
                 status_message = _runtime_live_watch_update_status_message(payload)
                 if status_message:
                     payload["status_message"] = status_message
-                    _write_json(LIVE_WATCH_STATE_PATH, payload)
+                    _write_json(LIVE_WATCH_STATE_PATH, _compact_live_watch_payload(payload))
                     actions.append({"kind": "restore_status_message", "ok": True, "message_id": status_message.get("message_id")})
             except Exception as exc:
                 actions.append({"kind": "restore_status_message", "ok": False, "error": str(exc)})

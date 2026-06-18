@@ -838,6 +838,15 @@ def handle_todoist(args: Dict[str, Any], **_: Any) -> str:
                 mcp_result["fallback_used"] = False
                 return _tool_result(mcp_result)
             except Exception as exc:
+                if _env("TODOIST_MCP_REQUIRED").strip().lower() in {"1", "true", "yes", "on"}:
+                    return _tool_result(
+                        success=False,
+                        action=action,
+                        connector="mcp",
+                        fallback_used=False,
+                        primary_error=str(exc),
+                        error=f"Todoist MCP is required but failed: {exc}",
+                    )
                 native_result = _todoist_native_call(args)
                 native_result["connector"] = "native_api"
                 native_result["fallback_used"] = True

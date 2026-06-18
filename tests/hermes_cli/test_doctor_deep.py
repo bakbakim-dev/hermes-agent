@@ -1,6 +1,21 @@
 from __future__ import annotations
 
 
+def test_doctor_parser_accepts_deep_flag():
+    import argparse
+
+    from hermes_cli.subcommands.doctor import build_doctor_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_doctor_parser(subparsers, cmd_doctor=lambda args: args)
+
+    args = parser.parse_args(["doctor", "--deep"])
+
+    assert args.command == "doctor"
+    assert args.deep is True
+
+
 def test_run_deep_checks_returns_truth_and_safety_checks(monkeypatch):
     from hermes_cli import doctor
 

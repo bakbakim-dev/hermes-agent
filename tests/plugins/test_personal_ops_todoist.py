@@ -90,7 +90,10 @@ def test_runtime_context_contributors_report_action():
 def _isolated_hermes_home(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("TODOIST_API_TOKEN", "dummy_token")
+    monkeypatch.setenv("TODOIST_CONNECTOR_MODE", "native_primary")
+    monkeypatch.setenv("TODOIST_MCP_REQUIRED", "false")
     monkeypatch.setenv("CLICKUP_API_TOKEN", "dummy_token")
     monkeypatch.setattr(tools, "HERMES_HOME", hermes_home)
     monkeypatch.setattr(tools, "APPROVALS_PATH", hermes_home / "personal_ops_approvals.json")
@@ -800,6 +803,7 @@ def test_todoist_router_prefers_mcp_for_list_tasks(monkeypatch):
 
 def test_todoist_router_falls_back_to_native_when_mcp_fails(monkeypatch):
     monkeypatch.setenv("TODOIST_CONNECTOR_MODE", "mcp_primary")
+    monkeypatch.setenv("TODOIST_MCP_REQUIRED", "false")
     monkeypatch.setattr(tools, "_todoist_mcp_available", lambda: True)
     monkeypatch.setattr(
         tools,
@@ -825,6 +829,27 @@ def test_todoist_router_falls_back_to_native_when_mcp_fails(monkeypatch):
     assert result["fallback_used"] is True
     assert "mcp auth expired" in result["primary_error"]
     assert result["tasks"][0]["content"] == "Native task"
+
+
+def test_todoist_router_fails_closed_when_mcp_required_and_mcp_fails(monkeypatch):
+    monkeypatch.setenv("TODOIST_CONNECTOR_MODE", "mcp_primary")
+    monkeypatch.setenv("TODOIST_MCP_REQUIRED", "true")
+    monkeypatch.setattr(tools, "_todoist_mcp_available", lambda: True)
+    monkeypatch.setattr(
+        tools,
+        "_todoist_mcp_call",
+        lambda action, payload: (_ for _ in ()).throw(RuntimeError("mcp auth expired")),
+    )
+    monkeypatch.setattr(
+        tools,
+        "_todoist_native_call",
+        lambda args: (_ for _ in ()).throw(AssertionError("native fallback must be blocked when MCP is required")),
+    )
+
+    result = _decode(tools.handle_todoist({"action": "list_tasks", "filter": "today"}))
+
+    assert result["success"] is False
+    assert "mcp auth expired" in result["error"]
 
 
 def test_todoist_mcp_primary_write_actions_still_require_approval(monkeypatch):
@@ -3647,6 +3672,40 @@ def test_builtin_promptfoo_cases_have_real_assertions_and_structured_inputs():
     breakfast = next(case for case in exported["tests"] if case["description"] == "builtin_breakfast_after_window")
     assert {"contains", "not-contains"} <= {item["type"] for item in breakfast["assert"]}
     assert any("Quick log" in item["value"] for item in breakfast["assert"] if item["type"] == "contains")
+
+
+def test_live_watch_state_compaction_removes_raw_task_bulk():
+    oversized = {
+        "ran_at": "2026-05-18T12:00:00+00:00",
+        "focus_guard": {
+            "status": "needs_focus",
+            "raw_tasks": [
+                {"id": str(index), "content": f"Task {index}", "description": "x" * 2000}
+                for index in range(40)
+            ],
+            "tasks": [
+                {"id": str(index), "content": f"Visible {index}", "description": "y" * 2000}
+                for index in range(40)
+            ],
+        },
+        "adaptive_companion": {
+            "state": {
+                "nudge_records": [
+                    {"id": str(index), "message": "z" * 2000}
+                    for index in range(50)
+                ]
+            }
+        },
+    }
+
+    compacted = tools._compact_live_watch_payload(oversized)
+
+    assert "raw_tasks" not in compacted["focus_guard"]
+    assert len(compacted["focus_guard"]["tasks"]) <= 12
+    assert len(compacted["adaptive_companion"]["state"]["nudge_records"]) <= 12
+    encoded = json.dumps(compacted)
+    assert len(encoded) < 25000
+    assert len(compacted["focus_guard"]["tasks"][0]["description"]) < 700
 
 
 def test_trace_failure_to_eval_adds_case_from_failed_trace():

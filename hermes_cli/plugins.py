@@ -1320,11 +1320,15 @@ class PluginManager:
                 )
                 continue
 
-            # Auto-load only a narrow configured subset of bundled
-            # backends/platforms. Everything else remains opt-in.
+            # Auto-load only a narrow configured subset of bundled plugins.
+            # Backends/platforms are the normal default-on classes; bundled
+            # standalone plugins may also load here, but only when named
+            # explicitly in plugins.auto_enable_bundled. This lets operators
+            # opt in shipped observability plugins such as Langfuse without
+            # enabling every standalone integration.
             if (
                 manifest.source == "bundled"
-                and manifest.kind in {"backend", "platform"}
+                and manifest.kind in {"backend", "platform", "standalone"}
                 and (lookup_key in auto_enabled_bundled or manifest.name in auto_enabled_bundled)
             ):
                 self._load_plugin(manifest)

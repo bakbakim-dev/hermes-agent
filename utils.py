@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_ATOMIC_WRITE_LOCKS: dict[str, threading.Lock] = {}
+_ATOMIC_WRITE_LOCKS_GUARD = threading.Lock()
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -134,6 +137,23 @@ def atomic_json_write(
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    lock_key = str(path.resolve())
+    with _ATOMIC_WRITE_LOCKS_GUARD:
+        lock = _ATOMIC_WRITE_LOCKS.setdefault(lock_key, threading.Lock())
+
+    with lock:
+        _atomic_json_write_unlocked(path, data, indent=indent, mode=mode, **dump_kwargs)
+
+
+def _atomic_json_write_unlocked(
+    path: Path,
+    data: Any,
+    *,
+    indent: int = 2,
+    mode: int | None = None,
+    **dump_kwargs: Any,
+) -> None:
+    """Implementation for atomic_json_write; caller serializes per target path."""
 
     original_mode = None if mode is not None else _preserve_file_mode(path)
 

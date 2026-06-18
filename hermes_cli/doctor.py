@@ -462,6 +462,105 @@ def _build_apikey_providers_list() -> list:
     return _static
 
 
+def audit_plugin_permissions() -> dict:
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        manager = get_plugin_manager()
+        manager.discover_and_load()
+        issues = []
+        for info in manager.list_plugins():
+            if not info.get("enabled"):
+                continue
+            if info.get("source") != "bundled" and not info.get("permissions"):
+                issues.append({
+                    "plugin": info.get("key") or info.get("name"),
+                    "issue": "enabled non-bundled plugin declares no permissions",
+                })
+        return {"ok": not issues, "issues": issues}
+    except Exception as exc:
+        return {"ok": False, "issues": [{"issue": str(exc)}]}
+
+
+def check_source_archive_hygiene() -> dict:
+    issues = []
+    if (PROJECT_ROOT / ".env").exists():
+        issues.append("source tree contains .env; keep secrets in ~/.hermes/.env or .env.example only")
+    if (PROJECT_ROOT / "skills" / "red-teaming" / "godmode").exists():
+        issues.append("unsafe godmode skill still exists in bundled skills")
+    return {
+        "ok": not issues,
+        "message": "source archive hygiene ok" if not issues else "; ".join(issues),
+        "issues": issues,
+    }
+
+
+def run_deep_checks() -> list[dict]:
+    checks: list[dict] = []
+    try:
+        from hermes_cli.capabilities import build_capability_matrix
+
+        rows = build_capability_matrix()
+        checks.append({
+            "id": "capability_matrix",
+            "ok": True,
+            "message": f"{len(rows)} capability row(s)",
+            "details": rows,
+        })
+    except Exception as exc:
+        checks.append({"id": "capability_matrix", "ok": False, "message": str(exc)})
+
+    try:
+        result = audit_plugin_permissions()
+        checks.append({
+            "id": "plugin_permissions",
+            "ok": bool(result.get("ok")),
+            "message": "plugin permissions ok" if result.get("ok") else "plugin permission issues found",
+            "details": result,
+        })
+    except Exception as exc:
+        checks.append({"id": "plugin_permissions", "ok": False, "message": str(exc)})
+
+    try:
+        from hermes_cli.test_runner import check_pytest_preflight
+
+        result = check_pytest_preflight()
+        checks.append({
+            "id": "pytest_preflight",
+            "ok": bool(result.get("ok")),
+            "message": str(result.get("message") or ""),
+            "details": result,
+        })
+    except Exception as exc:
+        checks.append({"id": "pytest_preflight", "ok": False, "message": str(exc)})
+
+    try:
+        result = check_source_archive_hygiene()
+        checks.append({
+            "id": "source_archive_hygiene",
+            "ok": bool(result.get("ok")),
+            "message": str(result.get("message") or ""),
+            "details": result,
+        })
+    except Exception as exc:
+        checks.append({"id": "source_archive_hygiene", "ok": False, "message": str(exc)})
+
+    return checks
+
+
+def _print_deep_checks() -> list[dict]:
+    _section("Deep Checks")
+    checks = run_deep_checks()
+    for check in checks:
+        label = str(check.get("id") or "unknown")
+        message = str(check.get("message") or "")
+        if check.get("ok"):
+            check_ok(label, f"({message})" if message else "")
+        else:
+            check_fail(label, f"({message})" if message else "")
+    return checks
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -510,6 +609,11 @@ def run_doctor(args):
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    if getattr(args, "deep", False):
+        for check in _print_deep_checks():
+            if not check.get("ok"):
+                issues.append(f"Deep check failed: {check.get('id')} - {check.get('message')}")
 
     _section("Security Advisories")
     try:

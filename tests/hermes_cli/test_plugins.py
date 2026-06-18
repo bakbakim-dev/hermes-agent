@@ -130,6 +130,13 @@ class TestPluginDiscovery:
             ),
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        (tmp_path / "hermes_test" / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - mw_plugin\n"
+            "  auto_enable_bundled: []\n",
+            encoding="utf-8",
+        )
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -398,6 +405,34 @@ class TestPluginDiscovery:
         assert mgr._plugins["personal-ops"].enabled is True
         assert mgr._plugins["google_meet"].enabled is False
 
+    def test_explicit_bundled_standalone_can_be_auto_enabled_by_key(self, tmp_path, monkeypatch):
+        """A bundled standalone plugin stays opt-in unless config names it explicitly."""
+        bundled_dir = tmp_path / "bundled"
+        langfuse = _make_plugin_dir(
+            bundled_dir / "observability",
+            "langfuse",
+            manifest_extra={"kind": "standalone"},
+            auto_enable=False,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        (tmp_path / "home" / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled: []\n"
+            "  auto_enable_bundled:\n"
+            "    - observability/langfuse\n",
+            encoding="utf-8",
+        )
+
+        mgr = PluginManager()
+        monkeypatch.setattr(mgr, "_scan_directory", lambda path, source, **kwargs: [
+            PluginManifest(name="langfuse", kind="standalone", source="bundled", path=str(langfuse), key="observability/langfuse"),
+        ] if source == "bundled" else [])
+        monkeypatch.setattr(mgr, "_scan_entry_points", lambda: [])
+        mgr.discover_and_load()
+
+        assert mgr._plugins["observability/langfuse"].enabled is True
+
     def test_discover_is_idempotent(self, tmp_path, monkeypatch):
         """Calling discover_and_load() twice does not duplicate plugins."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -659,6 +694,13 @@ class TestPluginLoading:
             "def register(ctx):\n    pass\n"
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        (tmp_path / "hermes_test" / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - not_memory\n"
+            "  auto_enable_bundled: []\n",
+            encoding="utf-8",
+        )
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -695,6 +737,13 @@ class TestPluginHooks:
             ),
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        (tmp_path / "hermes_test" / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - predispatch_plugin\n"
+            "  auto_enable_bundled: []\n",
+            encoding="utf-8",
+        )
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -735,6 +784,13 @@ class TestPluginHooks:
             ),
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        (tmp_path / "hermes_test" / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - schema_plugin\n"
+            "  auto_enable_bundled: []\n",
+            encoding="utf-8",
+        )
 
         mgr = PluginManager()
         mgr.discover_and_load()
