@@ -4259,7 +4259,21 @@ def test_stale_self_improve_approvals_are_pruned_from_pending():
                     "action": "apply_self_improve_report",
                     "summary": "fresh self improve",
                     "created_at": fresh_ts,
-                    "payload": {"action": "self_improve_apply"},
+                    "payload": {
+                        "action": "self_improve_apply",
+                        "report": {"upstream": {"behind": 0, "origin_ref": "origin/hermes/update-upstream-2026-06-18"}},
+                    },
+                },
+                "req_stale_schema_self": {
+                    "request_id": "req_stale_schema_self",
+                    "tool": "personal_runtime",
+                    "action": "apply_self_improve_report",
+                    "summary": "fresh timestamp, stale evidence schema",
+                    "created_at": fresh_ts,
+                    "payload": {
+                        "action": "self_improve_apply",
+                        "report": {"upstream": {"behind": 3578}},
+                    },
                 },
             },
             "history": [],
@@ -4270,10 +4284,12 @@ def test_stale_self_improve_approvals_are_pruned_from_pending():
     ids = {item["request_id"] for item in pending}
 
     assert "req_old_self" not in ids
+    assert "req_stale_schema_self" not in ids
     assert "req_todoist" in ids
     assert "req_fresh_self" in ids
     saved = json.loads(tools.APPROVALS_PATH.read_text(encoding="utf-8"))
     assert any(item["event"] == "expired" and item["request_id"] == "req_old_self" for item in saved["history"])
+    assert any(item["event"] == "expired" and item["request_id"] == "req_stale_schema_self" for item in saved["history"])
 
 
 def test_runtime_self_improve_report_throttles_repeat_telegram(monkeypatch):

@@ -49,7 +49,15 @@ def _prune_stale_self_improve_approvals(approvals: Dict[str, Any], *, now_ts: Op
             created_at = int(item.get("created_at") or 0)
         except (TypeError, ValueError):
             created_at = 0
-        if created_at <= 0 or now_ts - created_at > SELF_IMPROVE_APPROVAL_TTL_SECONDS:
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
+        upstream = report.get("upstream") if isinstance(report.get("upstream"), dict) else {}
+        stale_schema = (
+            str(item.get("action") or "") == "apply_self_improve_report"
+            and bool(report)
+            and not str(upstream.get("origin_ref") or "").strip()
+        )
+        if created_at <= 0 or now_ts - created_at > SELF_IMPROVE_APPROVAL_TTL_SECONDS or stale_schema:
             expired.append(dict(item))
             pending.pop(request_id, None)
 
