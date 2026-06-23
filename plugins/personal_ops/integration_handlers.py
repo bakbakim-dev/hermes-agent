@@ -437,7 +437,7 @@ def handle_runtime(args: Dict[str, Any], **_: Any) -> str:
             return _tool_result(action=action, **result)
         if action == "self_improve_report":
             result = _runtime_self_improve_report(
-                create_approval=bool(args.get("create_approval", True)),
+                create_approval=bool(args.get("create_approval", False)),
                 send_telegram=bool(args.get("send_telegram", False)),
                 force_send=bool(args.get("force_send", False)),
             )

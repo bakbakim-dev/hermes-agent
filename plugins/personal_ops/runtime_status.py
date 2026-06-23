@@ -3456,10 +3456,17 @@ def _runtime_self_improve_report_signature(report: Dict[str, Any]) -> str:
 def _runtime_self_improve_report_message(report: Dict[str, Any], request_id: Optional[str]) -> str:
     recommendations = list(report.get("recommendations") or [])
     actionable = [item for item in recommendations if item.get("kind") != "no_action"]
+    completed = list(report.get("completed_improvements") or [])
     lines = [
         "Self-improvement report",
         report.get("summary") or f"Found {len(recommendations)} recommendation(s).",
     ]
+    if completed:
+        lines.append("Completed improvements:")
+        for index, item in enumerate(completed[:5], start=1):
+            label = str(item.get("summary") or item.get("message") or item.get("commit") or "").strip()
+            if label:
+                lines.append(f"{index}. {label}")
     for index, item in enumerate(actionable[:5], start=1):
         approval = "approval needed" if item.get("requires_approval") else "safe maintenance"
         lines.append(f"{index}. {item.get('kind')}: {item.get('summary')} ({approval})")
@@ -3476,7 +3483,38 @@ def _runtime_self_improve_report_message(report: Dict[str, Any], request_id: Opt
     return "\n".join(lines)
 
 
-def _runtime_self_improve_report(*, create_approval: bool = True, send_telegram: bool = True, force_send: bool = False) -> Dict[str, Any]:
+def _runtime_recent_completed_improvements(repo_path: Optional[Path] = None, *, limit: int = 8) -> List[Dict[str, Any]]:
+    """Return recent deployed commits that represent concrete Hermes improvements."""
+    repo_path = Path(repo_path) if repo_path is not None else _runtime_default_repo_path()
+    ok, output = _runtime_git_output(
+        repo_path,
+        ["log", "--since=24 hours ago", f"--max-count={max(int(limit), 1)}", "--pretty=format:%h%x09%ct%x09%s"],
+    )
+    if not ok or not output:
+        return []
+
+    improvements: List[Dict[str, Any]] = []
+    for raw in output.splitlines():
+        parts = raw.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        commit, ts_raw, message = parts
+        try:
+            committed_at = datetime.fromtimestamp(int(ts_raw), timezone.utc).isoformat()
+        except (TypeError, ValueError, OSError):
+            committed_at = ""
+        improvements.append(
+            {
+                "commit": commit.strip(),
+                "committed_at": committed_at,
+                "message": message.strip(),
+                "summary": f"{commit.strip()}: {message.strip()}",
+            }
+        )
+    return improvements
+
+
+def _runtime_self_improve_report(*, create_approval: bool = False, send_telegram: bool = True, force_send: bool = False) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     services = [RUNTIME_SERVICE_NAME, "hermes-event-webhook.service"]
     if _env("TELEGRAM_CAPTURE_BOT_TOKEN"):
@@ -3586,6 +3624,7 @@ def _runtime_self_improve_report(*, create_approval: bool = True, send_telegram:
     report = {
         "generated_at": now.isoformat(),
         "summary": f"Self-improve report found {len(recommendations)} recommendation(s).",
+        "completed_improvements": _runtime_recent_completed_improvements(limit=8),
         "services": service_statuses,
         "live_watch": {
             "ran_at": (live_watch or {}).get("ran_at"),

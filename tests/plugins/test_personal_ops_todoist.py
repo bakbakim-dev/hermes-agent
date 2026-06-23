@@ -4174,6 +4174,30 @@ def test_runtime_self_improve_report_creates_approval_request(monkeypatch):
     assert upstream_items[0]["evidence"]["origin_ref"] == "origin/hermes/update-upstream-2026-06-18"
 
 
+def test_runtime_self_improve_report_default_is_read_only(monkeypatch):
+    monkeypatch.setattr(tools, "_runtime_service_status", lambda service_name=tools.RUNTIME_SERVICE_NAME: {
+        "active": True,
+        "state": "active",
+        "service": service_name,
+    })
+    monkeypatch.setattr(tools, "_runtime_upstream_status", lambda **kwargs: {
+        "recent_commit_count": 0,
+        "local": {"behind": 0, "origin_ref": "origin/hermes/update-upstream-2026-06-18"},
+    })
+    monkeypatch.setattr(tools, "_runtime_recent_incidents", lambda **kwargs: [])
+    monkeypatch.setattr(tools, "_runtime_recent_completed_improvements", lambda **kwargs: [
+        {"commit": "abc123", "message": "Fix update status", "summary": "abc123: Fix update status"}
+    ])
+
+    result = _decode(tools.handle_runtime({"action": "self_improve_report"}))
+    pending = _decode(tools.handle_security({"action": "list_pending"}))["pending"]
+
+    assert result["success"] is True
+    assert result["approval_required"] is False
+    assert result["report"]["completed_improvements"][0]["summary"] == "abc123: Fix update status"
+    assert pending == []
+
+
 def test_runtime_self_improve_report_can_send_proactive_telegram(monkeypatch):
     sent = []
     monkeypatch.setattr(tools, "_focus_guard_send_telegram_message", lambda text, **kwargs: sent.append(text) or {"ok": True})
@@ -4202,6 +4226,24 @@ def test_runtime_self_improve_report_can_send_proactive_telegram(monkeypatch):
     assert "Self-improvement report" in sent[0]
     assert "origin/hermes/update-upstream-2026-06-18" in sent[0]
     assert "Approve:" in sent[0]
+
+
+def test_runtime_self_improve_report_message_lists_completed_improvements():
+    message = tools._runtime_self_improve_report_message(
+        {
+            "summary": "Self-improve report found 0 recommendation(s).",
+            "completed_improvements": [
+                {"summary": "abc123: Fix update status"},
+                {"summary": "def456: Expire stale approvals"},
+            ],
+            "recommendations": [],
+        },
+        request_id=None,
+    )
+
+    assert "Completed improvements:" in message
+    assert "abc123: Fix update status" in message
+    assert "Approve:" not in message
 
 
 def test_runtime_self_improve_report_separates_recent_upstream_from_branch_behind(monkeypatch):
