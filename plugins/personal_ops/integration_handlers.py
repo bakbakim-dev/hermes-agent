@@ -1075,6 +1075,8 @@ def handle_security(args: Dict[str, Any], **_: Any) -> str:
             summary=_summarize_event_match(query, best["record"], best["why_matched"]),
         )
     if action == "list_pending":
+        if _prune_stale_self_improve_approvals(approvals):
+            _save_approvals(approvals)
         return _tool_result(success=True, pending=list(approvals.get("pending", {}).values()))
     if action == "deny_request":
         request_id = str(args.get("request_id") or "").strip()
@@ -1090,6 +1092,8 @@ def handle_security(args: Dict[str, Any], **_: Any) -> str:
         if not request_id:
             return _tool_error("request_id is required")
         approvals = _load_approvals()
+        if _prune_stale_self_improve_approvals(approvals):
+            _save_approvals(approvals)
         pending = approvals.get("pending", {}).get(request_id)
         if pending is None:
             return _tool_error(f"No pending request found for {request_id}")

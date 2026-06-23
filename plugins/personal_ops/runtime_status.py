@@ -24,6 +24,54 @@ def _save_approvals(data: Dict[str, Any]) -> None:
     _write_json(APPROVALS_PATH, data)
 
 
+SELF_IMPROVE_APPROVAL_TTL_SECONDS = 24 * 60 * 60
+SELF_IMPROVE_APPROVAL_ACTIONS = {
+    "apply_self_improve_report",
+    "self_improve_pipeline_apply",
+}
+
+
+def _prune_stale_self_improve_approvals(approvals: Dict[str, Any], *, now_ts: Optional[int] = None) -> bool:
+    """Expire stale self-improve approvals because their evidence is a snapshot."""
+    now_ts = int(now_ts if now_ts is not None else _now())
+    pending = approvals.get("pending") or {}
+    if not isinstance(pending, dict):
+        approvals["pending"] = {}
+        return True
+
+    expired: List[Dict[str, Any]] = []
+    for request_id, item in list(pending.items()):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("action") or "") not in SELF_IMPROVE_APPROVAL_ACTIONS:
+            continue
+        try:
+            created_at = int(item.get("created_at") or 0)
+        except (TypeError, ValueError):
+            created_at = 0
+        if created_at <= 0 or now_ts - created_at > SELF_IMPROVE_APPROVAL_TTL_SECONDS:
+            expired.append(dict(item))
+            pending.pop(request_id, None)
+
+    if not expired:
+        return False
+
+    history = approvals.setdefault("history", [])
+    for item in expired:
+        history.append(
+            {
+                "request_id": item.get("request_id"),
+                "event": "expired",
+                "tool": item.get("tool"),
+                "action": item.get("action"),
+                "summary": item.get("summary"),
+                "reason": "self_improve_snapshot_ttl",
+                "ts": now_ts,
+            }
+        )
+    return True
+
+
 def _env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if value:
@@ -4131,6 +4179,7 @@ def _approval_response(request_id: str, summary: str, reason: str, benefit: str,
 
 def _create_approval(*, tool_name: str, action: str, summary: str, reason: str, benefit: str, payload: Dict[str, Any]) -> str:
     approvals = _load_approvals()
+    _prune_stale_self_improve_approvals(approvals)
     request_id = f"req_{uuid.uuid4().hex[:10]}"
     approvals["pending"][request_id] = {
         "request_id": request_id,
@@ -4162,6 +4211,8 @@ def _create_approval(*, tool_name: str, action: str, summary: str, reason: str, 
 
 def _pop_pending(request_id: str) -> Optional[Dict[str, Any]]:
     approvals = _load_approvals()
+    if _prune_stale_self_improve_approvals(approvals):
+        _save_approvals(approvals)
     pending = approvals.get("pending", {}).pop(request_id, None)
     if pending is not None:
         approvals["history"].append(

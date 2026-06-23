@@ -4230,6 +4230,52 @@ def test_runtime_self_improve_report_separates_recent_upstream_from_branch_behin
     assert "0 commit(s) behind" not in upstream_items[0]["summary"]
 
 
+def test_stale_self_improve_approvals_are_pruned_from_pending():
+    old_ts = 1_777_593_600  # 2026-05-01T00:00:00Z
+    fresh_ts = tools._now()
+    tools._write_json(
+        tools.APPROVALS_PATH,
+        {
+            "pending": {
+                "req_old_self": {
+                    "request_id": "req_old_self",
+                    "tool": "personal_runtime",
+                    "action": "apply_self_improve_report",
+                    "summary": "old self improve",
+                    "created_at": old_ts,
+                    "payload": {"action": "self_improve_apply"},
+                },
+                "req_todoist": {
+                    "request_id": "req_todoist",
+                    "tool": "personal_todoist",
+                    "action": "update_task",
+                    "summary": "still pending",
+                    "created_at": old_ts,
+                    "payload": {"action": "update_task"},
+                },
+                "req_fresh_self": {
+                    "request_id": "req_fresh_self",
+                    "tool": "personal_runtime",
+                    "action": "apply_self_improve_report",
+                    "summary": "fresh self improve",
+                    "created_at": fresh_ts,
+                    "payload": {"action": "self_improve_apply"},
+                },
+            },
+            "history": [],
+        },
+    )
+
+    pending = _decode(tools.handle_security({"action": "list_pending"}))["pending"]
+    ids = {item["request_id"] for item in pending}
+
+    assert "req_old_self" not in ids
+    assert "req_todoist" in ids
+    assert "req_fresh_self" in ids
+    saved = json.loads(tools.APPROVALS_PATH.read_text(encoding="utf-8"))
+    assert any(item["event"] == "expired" and item["request_id"] == "req_old_self" for item in saved["history"])
+
+
 def test_runtime_self_improve_report_throttles_repeat_telegram(monkeypatch):
     sent = []
     monkeypatch.setattr(tools, "_focus_guard_send_telegram_message", lambda text, **kwargs: sent.append(text) or {"ok": True})
