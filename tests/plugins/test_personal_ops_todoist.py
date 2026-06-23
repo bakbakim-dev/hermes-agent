@@ -2284,7 +2284,9 @@ def test_runtime_upstream_status_summarizes_commits_and_local_behind(monkeypatch
             "repo_path": str(repo_path),
             "behind": 2,
             "head": "1111111",
-            "origin_main": "2222222",
+            "origin_branch": "hermes/update-upstream-2026-06-18",
+            "origin_ref": "origin/hermes/update-upstream-2026-06-18",
+            "origin": "2222222",
             "fetch_ok": True,
         },
     )
@@ -2308,8 +2310,12 @@ def test_runtime_watch_upstream_sends_telegram_when_changes_exist(monkeypatch):
             "recent_commits": [
                 {"sha": "abcdef123456", "message": "feat: improve cron reliability", "author": "alice"},
             ],
-            "local": {"behind": 1, "repo_path": "/home/ubuntu/hermes-agent"},
-            "summary": "Hermes upstream changed: 1 commit in the last 24h. Local checkout is 1 commit behind origin/main.",
+            "local": {
+                "behind": 1,
+                "repo_path": "/home/ubuntu/hermes-agent",
+                "origin_ref": "origin/hermes/update-upstream-2026-06-18",
+            },
+            "summary": "Hermes upstream changed: 1 commit in the last 24h. Local checkout is 1 commit behind origin/hermes/update-upstream-2026-06-18.",
         },
     )
     monkeypatch.setattr(tools, "_focus_guard_send_telegram_message", lambda text, **kwargs: sent.append(text) or {"ok": True})
@@ -2331,8 +2337,12 @@ def test_runtime_watch_upstream_stays_quiet_when_current(monkeypatch):
             "hours": 24,
             "recent_commit_count": 0,
             "recent_commits": [],
-            "local": {"behind": 0, "repo_path": "/home/ubuntu/hermes-agent"},
-            "summary": "No Hermes upstream commits in the last 24h. Local checkout is current with origin/main.",
+            "local": {
+                "behind": 0,
+                "repo_path": "/home/ubuntu/hermes-agent",
+                "origin_ref": "origin/hermes/update-upstream-2026-06-18",
+            },
+            "summary": "No Hermes upstream commits in the last 24h. Local checkout is current with origin/hermes/update-upstream-2026-06-18.",
         },
     )
     monkeypatch.setattr(

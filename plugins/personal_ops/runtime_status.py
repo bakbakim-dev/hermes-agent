@@ -404,12 +404,41 @@ def _runtime_git_output(repo_path: Path, args: List[str], *, timeout: int = 20) 
         return False, str(exc)
 
 
+def _runtime_update_compare_branch(repo_path: Path) -> str:
+    """Return the remote branch that represents this checkout's update target."""
+    current_ok, current_output = _runtime_git_output(
+        repo_path,
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    current_branch = current_output.strip() if current_ok else ""
+    if current_branch and current_branch != "HEAD":
+        verify_ok, _ = _runtime_git_output(
+            repo_path,
+            ["rev-parse", "--verify", "--quiet", f"origin/{current_branch}"],
+        )
+        if verify_ok:
+            return current_branch
+
+    head_ok, head_output = _runtime_git_output(
+        repo_path,
+        ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    if head_ok:
+        value = head_output.strip()
+        if value.startswith("origin/"):
+            return value.split("/", 1)[1]
+
+    return "main"
+
+
 def _runtime_local_git_status(repo_path: Path) -> Dict[str, Any]:
     repo_path = Path(repo_path)
-    fetch_ok, fetch_output = _runtime_git_output(repo_path, ["fetch", "origin"], timeout=45)
-    behind_ok, behind_output = _runtime_git_output(repo_path, ["rev-list", "--count", "HEAD..origin/main"])
+    branch = _runtime_update_compare_branch(repo_path)
+    origin_ref = f"origin/{branch}"
+    fetch_ok, fetch_output = _runtime_git_output(repo_path, ["fetch", "origin", branch], timeout=45)
+    behind_ok, behind_output = _runtime_git_output(repo_path, ["rev-list", "--count", f"HEAD..{origin_ref}"])
     head_ok, head_output = _runtime_git_output(repo_path, ["rev-parse", "--short", "HEAD"])
-    origin_ok, origin_output = _runtime_git_output(repo_path, ["rev-parse", "--short", "origin/main"])
+    origin_ok, origin_output = _runtime_git_output(repo_path, ["rev-parse", "--short", origin_ref])
     behind: Optional[int] = None
     if behind_ok:
         try:
@@ -422,7 +451,9 @@ def _runtime_local_git_status(repo_path: Path) -> Dict[str, Any]:
         "fetch_output": fetch_output if not fetch_ok else "",
         "behind": behind,
         "head": head_output if head_ok else None,
-        "origin_main": origin_output if origin_ok else None,
+        "origin_branch": branch,
+        "origin_ref": origin_ref,
+        "origin": origin_output if origin_ok else None,
     }
 
 
@@ -470,9 +501,11 @@ def _runtime_upstream_summary(status: Dict[str, Any]) -> str:
     if behind is None:
         tail = "Local checkout status could not be determined."
     elif int(behind) > 0:
-        tail = f"Local checkout is {behind} commit(s) behind origin/main."
+        origin_ref = (status.get("local") or {}).get("origin_ref") or "origin/main"
+        tail = f"Local checkout is {behind} commit(s) behind {origin_ref}."
     else:
-        tail = "Local checkout is current with origin/main."
+        origin_ref = (status.get("local") or {}).get("origin_ref") or "origin/main"
+        tail = f"Local checkout is current with {origin_ref}."
     commits = list(status.get("recent_commits") or [])
     if commits:
         latest = str((commits[0] or {}).get("message") or "").strip()
