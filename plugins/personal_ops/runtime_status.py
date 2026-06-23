@@ -3484,9 +3484,13 @@ def _runtime_self_improve_report(*, create_approval: bool = True, send_telegram:
                 "evidence": job or {"missing": True},
             })
     if behind > 0 or int(upstream.get("recent_commit_count") or 0) > 0:
+        if behind > 0:
+            upstream_summary = f"Hermes upstream has changes; local checkout is {behind} commit(s) behind {origin_ref}."
+        else:
+            upstream_summary = f"Hermes upstream has recent commits, but the deployed checkout is current with {origin_ref}."
         recommendations.append({
             "kind": "upstream_review",
-            "summary": f"Hermes upstream has changes; local checkout is {behind} commit(s) behind {origin_ref}.",
+            "summary": upstream_summary,
             "proposed_action": "Review upstream changes and compare them against the deployed branch before applying code updates.",
             "risk": "code_change_requires_review",
             "requires_approval": True,

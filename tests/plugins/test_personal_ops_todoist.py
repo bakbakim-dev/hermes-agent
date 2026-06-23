@@ -4204,6 +4204,32 @@ def test_runtime_self_improve_report_can_send_proactive_telegram(monkeypatch):
     assert "Approve:" in sent[0]
 
 
+def test_runtime_self_improve_report_separates_recent_upstream_from_branch_behind(monkeypatch):
+    monkeypatch.setattr(tools, "_focus_guard_send_telegram_message", lambda text, **kwargs: {"ok": True})
+    monkeypatch.setattr(tools, "_telegram_messages_allowed_now", lambda now_hour=None: True)
+    monkeypatch.setattr(tools, "_runtime_service_status", lambda service_name=tools.RUNTIME_SERVICE_NAME: {
+        "active": True,
+        "state": "active",
+        "service": service_name,
+    })
+    monkeypatch.setattr(tools, "_runtime_upstream_status", lambda **kwargs: {
+        "recent_commit_count": 68,
+        "local": {"behind": 0, "origin_ref": "origin/hermes/update-upstream-2026-06-18"},
+    })
+    monkeypatch.setattr(tools, "_runtime_recent_incidents", lambda **kwargs: [])
+
+    result = _decode(tools.handle_runtime({
+        "action": "self_improve_report",
+        "create_approval": False,
+        "send_telegram": False,
+    }))
+
+    upstream_items = [item for item in result["report"]["recommendations"] if item["kind"] == "upstream_review"]
+    assert upstream_items
+    assert "current with origin/hermes/update-upstream-2026-06-18" in upstream_items[0]["summary"]
+    assert "0 commit(s) behind" not in upstream_items[0]["summary"]
+
+
 def test_runtime_self_improve_report_throttles_repeat_telegram(monkeypatch):
     sent = []
     monkeypatch.setattr(tools, "_focus_guard_send_telegram_message", lambda text, **kwargs: sent.append(text) or {"ok": True})
