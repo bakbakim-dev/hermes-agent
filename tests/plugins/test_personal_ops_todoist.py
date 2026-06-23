@@ -2298,6 +2298,17 @@ def test_runtime_upstream_status_summarizes_commits_and_local_behind(monkeypatch
     assert "improve cron reliability" in status["summary"]
 
 
+def test_runtime_default_repo_path_prefers_current_release(monkeypatch, tmp_path):
+    current = tmp_path / "hermes-agent-current"
+    old = tmp_path / "hermes-agent"
+    current.mkdir()
+    old.mkdir()
+    monkeypatch.delenv("HERMES_AGENT_REPO_PATH", raising=False)
+    monkeypatch.setattr(tools, "Path", lambda value=None: current if value == "/home/ubuntu/hermes-agent-current" else old if value == "/home/ubuntu/hermes-agent" else Path(value or "."))
+
+    assert tools._runtime_default_repo_path() == current
+
+
 def test_runtime_watch_upstream_sends_telegram_when_changes_exist(monkeypatch):
     sent = []
     monkeypatch.setattr(

@@ -384,6 +384,9 @@ def _runtime_default_repo_path() -> Path:
     configured = _env("HERMES_AGENT_REPO_PATH")
     if configured:
         return Path(configured).expanduser()
+    current = Path("/home/ubuntu/hermes-agent-current")
+    if current.exists():
+        return current
     common = Path("/home/ubuntu/hermes-agent")
     if common.exists():
         return common
