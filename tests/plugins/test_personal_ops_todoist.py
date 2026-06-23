@@ -4139,7 +4139,7 @@ def test_runtime_self_improve_report_creates_approval_request(monkeypatch):
     })
     monkeypatch.setattr(tools, "_runtime_upstream_status", lambda **kwargs: {
         "recent_commit_count": 2,
-        "local": {"behind": 3},
+        "local": {"behind": 3, "origin_ref": "origin/hermes/update-upstream-2026-06-18"},
     })
     monkeypatch.setattr(tools, "_runtime_recent_incidents", lambda **kwargs: [{"type": "example_incident"}])
     tools._write_json(tools.LIVE_WATCH_STATE_PATH, {
@@ -4157,7 +4157,10 @@ def test_runtime_self_improve_report_creates_approval_request(monkeypatch):
     assert pending[0]["action"] == "apply_self_improve_report"
     assert pending[0]["payload"]["action"] == "self_improve_apply"
     assert pending[0]["payload"]["report"]["recommendations"]
-    assert any(item["kind"] == "upstream_review" for item in result["report"]["recommendations"])
+    upstream_items = [item for item in result["report"]["recommendations"] if item["kind"] == "upstream_review"]
+    assert upstream_items
+    assert "origin/hermes/update-upstream-2026-06-18" in upstream_items[0]["summary"]
+    assert upstream_items[0]["evidence"]["origin_ref"] == "origin/hermes/update-upstream-2026-06-18"
 
 
 def test_runtime_self_improve_report_can_send_proactive_telegram(monkeypatch):
@@ -4171,7 +4174,7 @@ def test_runtime_self_improve_report_can_send_proactive_telegram(monkeypatch):
     })
     monkeypatch.setattr(tools, "_runtime_upstream_status", lambda **kwargs: {
         "recent_commit_count": 1,
-        "local": {"behind": 2},
+        "local": {"behind": 2, "origin_ref": "origin/hermes/update-upstream-2026-06-18"},
     })
     monkeypatch.setattr(tools, "_runtime_recent_incidents", lambda **kwargs: [])
 
@@ -4186,6 +4189,7 @@ def test_runtime_self_improve_report_can_send_proactive_telegram(monkeypatch):
     assert sent
     assert result["request_id"] in sent[0]
     assert "Self-improvement report" in sent[0]
+    assert "origin/hermes/update-upstream-2026-06-18" in sent[0]
     assert "Approve:" in sent[0]
 
 

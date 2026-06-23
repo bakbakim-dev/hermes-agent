@@ -259,6 +259,7 @@ def _runtime_hermes_update_request(args: Dict[str, Any]) -> Dict[str, Any]:
         repo_path=Path(str(args.get("repo_path"))) if args.get("repo_path") else None,
     )
     behind = int(((upstream.get("local") or {}).get("behind")) or 0)
+    origin_ref = str(((upstream.get("local") or {}).get("origin_ref")) or "origin/main")
     recent_count = int(upstream.get("recent_commit_count") or 0)
     updates_available = bool(behind > 0 or recent_count > 0)
     recommended_response = (
@@ -269,12 +270,12 @@ def _runtime_hermes_update_request(args: Dict[str, Any]) -> Dict[str, Any]:
     if not updates_available:
         recommended_response = (
             f"{recommended_response}\n\nCurrent check: Hermes appears current against the configured upstream "
-            f"(behind={behind}, recent upstream commits in window={recent_count})."
+            f"({origin_ref}: behind={behind}, recent upstream commits in window={recent_count})."
         )
     else:
         recommended_response = (
             f"{recommended_response}\n\nCurrent check: upstream changes may be available "
-            f"(behind={behind}, recent upstream commits in window={recent_count}). "
+            f"({origin_ref}: behind={behind}, recent upstream commits in window={recent_count}). "
             "Safe next move: create a GitOps update proposal, not apply it blindly."
         )
     return {
@@ -3323,6 +3324,7 @@ def _runtime_self_improve_run() -> Dict[str, Any]:
         observations.append(f"{len(incidents)} recent incident(s)")
     upstream = _runtime_upstream_status(hours=24)
     behind = int(((upstream.get("local") or {}).get("behind")) or 0)
+    origin_ref = str(((upstream.get("local") or {}).get("origin_ref")) or "origin/main")
     if behind > 0:
         observations.append(f"upstream behind by {behind}")
 
@@ -3430,6 +3432,7 @@ def _runtime_self_improve_report(*, create_approval: bool = True, send_telegram:
     incidents = _runtime_recent_incidents(limit=10)
     upstream = _runtime_upstream_status(hours=24)
     behind = int(((upstream.get("local") or {}).get("behind")) or 0)
+    origin_ref = str(((upstream.get("local") or {}).get("origin_ref")) or "origin/main")
     cron_data = _runtime_read_cron_jobs()
     cron_jobs = {str(job.get("id") or ""): job for job in list(cron_data.get("jobs") or []) if isinstance(job, dict)}
     companion_state = _read_json(ADAPTIVE_COMPANION_STATE_PATH, {})
@@ -3480,11 +3483,15 @@ def _runtime_self_improve_report(*, create_approval: bool = True, send_telegram:
     if behind > 0 or int(upstream.get("recent_commit_count") or 0) > 0:
         recommendations.append({
             "kind": "upstream_review",
-            "summary": f"Hermes upstream has changes; local checkout is {behind} commit(s) behind.",
-            "proposed_action": "Review upstream changes before applying code updates.",
+            "summary": f"Hermes upstream has changes; local checkout is {behind} commit(s) behind {origin_ref}.",
+            "proposed_action": "Review upstream changes and compare them against the deployed branch before applying code updates.",
             "risk": "code_change_requires_review",
             "requires_approval": True,
-            "evidence": {"behind": behind, "recent_commit_count": int(upstream.get("recent_commit_count") or 0)},
+            "evidence": {
+                "behind": behind,
+                "origin_ref": origin_ref,
+                "recent_commit_count": int(upstream.get("recent_commit_count") or 0),
+            },
         })
     if incidents:
         recommendations.append({
@@ -3523,7 +3530,11 @@ def _runtime_self_improve_report(*, create_approval: bool = True, send_telegram:
             "has_operator_brief": bool((live_watch or {}).get("operator_brief")),
             "has_agi_operator_cycle": bool((live_watch or {}).get("agi_operator_cycle")),
         },
-        "upstream": {"behind": behind, "recent_commit_count": int(upstream.get("recent_commit_count") or 0)},
+        "upstream": {
+            "behind": behind,
+            "origin_ref": origin_ref,
+            "recent_commit_count": int(upstream.get("recent_commit_count") or 0),
+        },
         "incident_count": len(incidents),
         "candidate_skills": candidate_skills,
         "recommendations": recommendations,
