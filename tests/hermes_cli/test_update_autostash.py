@@ -548,6 +548,10 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if "rev-parse" in joined and "--verify" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "symbolic-ref" in joined and "refs/remotes/origin/HEAD" in joined:
+            return SimpleNamespace(stdout="origin/main\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
@@ -602,11 +606,11 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Non-main branch → auto-checkout main
+# Current remote-backed branch → no auto-checkout
 # ---------------------------------------------------------------------------
 
-def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, capsys):
-    """When on a feature branch, update checks out main before pulling."""
+def test_cmd_update_stays_on_remote_backed_feature_branch(monkeypatch, tmp_path, capsys):
+    """When the current branch exists on origin, update that branch in place."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
@@ -615,12 +619,17 @@ def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, 
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
-    assert len(checkout_calls) == 1
+    fetch_calls = [c for c in recorded if "fetch" in c]
+    assert fetch_calls == [["git", "fetch", "origin", "fix/something"]]
+
+    rev_list_calls = [c for c in recorded if "rev-list" in c]
+    assert rev_list_calls == [["git", "rev-list", "HEAD..origin/fix/something", "--count"]]
+
+    checkout_calls = [c for c in recorded if "checkout" in c]
+    assert checkout_calls == []
 
     out = capsys.readouterr().out
-    assert "fix/something" in out
-    assert "switching to main" in out
+    assert "switching to main" not in out
 
 
 def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, capsys):
@@ -641,7 +650,7 @@ def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, c
 
 
 def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatch, tmp_path, capsys):
-    """When on a feature branch with no updates, stash is restored and branch switched back."""
+    """When the current branch is up to date, stash is restored without branch churn."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
@@ -666,9 +675,9 @@ def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatc
     # Stash should have been restored
     assert len(restore_calls) == 1
 
-    # Should have checked out back to the original branch
+    # Should not switch away from the current remote-backed branch.
     checkout_back = [c for c in recorded if "checkout" in c and "fix/something" in c]
-    assert len(checkout_back) == 1
+    assert len(checkout_back) == 0
 
     out = capsys.readouterr().out
     assert "Already up to date" in out

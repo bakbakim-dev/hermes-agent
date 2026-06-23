@@ -7868,6 +7868,59 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _resolve_update_target_branch(args, git_cmd, repo_root: Path) -> str:
+    """Choose the git branch ``hermes update`` should actually update.
+
+    An explicit ``--branch`` always wins.  Without it, prefer the current
+    branch when it has a matching ``origin/<branch>`` ref.  This keeps forked
+    deployments that run from a long-lived deploy branch from trying to switch
+    to ``main`` when the checkout was intentionally single-branch.
+    """
+    explicit = getattr(args, "branch", None)
+    if explicit is not None and str(explicit).strip():
+        return str(explicit).strip()
+
+    try:
+        current = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        current = None
+
+    current_branch = (current.stdout.strip() if current and current.returncode == 0 else "")
+    if current_branch and current_branch != "HEAD":
+        verify_current = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", "--quiet", f"origin/{current_branch}"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if verify_current.returncode == 0:
+            return current_branch
+
+    try:
+        remote_head = subprocess.run(
+            git_cmd + ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if remote_head.returncode == 0:
+            value = remote_head.stdout.strip()
+            if value.startswith("origin/"):
+                return value.split("/", 1)[1]
+    except Exception:
+        pass
+
+    return "main"
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -8441,7 +8494,13 @@ def cmd_update(args):
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches
         # what a subsequent `hermes update --branch=<x>` would actually pull.
-        branch = _resolve_update_branch(args)
+        if not getattr(args, "branch", None) and (PROJECT_ROOT / ".git").exists():
+            git_cmd = ["git"]
+            if sys.platform == "win32":
+                git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+            branch = _resolve_update_target_branch(args, git_cmd, PROJECT_ROOT)
+        else:
+            branch = _resolve_update_branch(args)
         _cmd_update_check(
             branch=branch,
             branch_explicit=bool(getattr(args, "branch", None)),
@@ -8660,7 +8719,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # thousands of auto-generated branches — an unscoped fetch can stall for
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
-        branch = _resolve_update_branch(args)
+        branch = _resolve_update_target_branch(args, git_cmd, PROJECT_ROOT)
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(

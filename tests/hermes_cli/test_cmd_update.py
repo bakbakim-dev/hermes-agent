@@ -110,7 +110,7 @@ class TestCmdUpdatePip:
 
 
 class TestCmdUpdateBranchFallback:
-    """cmd_update falls back to main when current branch has no remote counterpart."""
+    """cmd_update chooses a safe default branch when --branch is omitted."""
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -142,7 +142,7 @@ class TestCmdUpdateBranchFallback:
         self, mock_run, _mock_which, mock_args, capsys
     ):
         mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="2"
+            branch="hermes/update-upstream-2026-06-18", verify_ok=True, commit_count="2"
         )
 
         cmd_update(mock_args)
@@ -151,11 +151,13 @@ class TestCmdUpdateBranchFallback:
 
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert len(rev_list_cmds) == 1
-        assert "origin/main" in rev_list_cmds[0]
+        assert "origin/hermes/update-upstream-2026-06-18" in rev_list_cmds[0]
+        assert "origin/main" not in rev_list_cmds[0]
 
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        assert "hermes/update-upstream-2026-06-18" in pull_cmds[0]
+        assert "main" not in pull_cmds[0].split()
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
