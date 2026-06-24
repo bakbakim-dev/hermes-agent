@@ -3315,6 +3315,14 @@ _FORMALIZED_WORKFLOW_CHECKLISTS: Dict[tuple[str, str], Dict[str, Any]] = {
             "Suppress proactive Telegram unless another high-value reason passes policy.",
         ],
     },
+    ("wake", "manual"): {
+        "title": "Manual wake check",
+        "checklist": [
+            "Treat this as an explicit diagnostic or user-initiated check.",
+            "Build the same cautious wake briefing without claiming physical presence.",
+            "Prefer explainable task triage over motivational pressure.",
+        ],
+    },
     ("gym.arrived", "ios-shortcut"): {
         "title": "Verified gym arrival",
         "checklist": [
@@ -3350,8 +3358,24 @@ _FORMALIZED_WORKFLOW_CHECKLISTS: Dict[tuple[str, str], Dict[str, Any]] = {
 }
 
 
+_FORMALIZED_INTERVENTION_PATTERNS: Dict[tuple[str, str], Dict[str, Any]] = {
+    ("hierarchy_enforcement", "friction_avoidance"): {
+        "title": "Evidence-first friction repair",
+        "checklist": [
+            "Name the higher-value task only when supported by Todoist/current state.",
+            "Avoid shame or character judgments.",
+            "Offer a concrete repair move: do, split, defer, or mark blocked.",
+        ],
+    },
+}
+
+
 def _runtime_formalized_workflow(event_type: str, source: str) -> Optional[Dict[str, Any]]:
     return _FORMALIZED_WORKFLOW_CHECKLISTS.get((event_type.strip().lower(), source.strip().lower()))
+
+
+def _runtime_formalized_intervention(family: str, pattern: str) -> Optional[Dict[str, Any]]:
+    return _FORMALIZED_INTERVENTION_PATTERNS.get((family.strip().lower(), pattern.strip().lower()))
 
 
 def _runtime_detect_candidate_skills(*, companion_state: Dict[str, Any], runtime_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -3396,6 +3420,8 @@ def _runtime_detect_candidate_skills(*, companion_state: Dict[str, Any], runtime
 
     for (family, pattern), count in sorted(family_counts.items(), key=lambda pair: (-pair[1], pair[0][0], pair[0][1])):
         if count < 2:
+            continue
+        if _runtime_formalized_intervention(family, pattern):
             continue
         candidates.append(
             {
