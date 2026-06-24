@@ -3216,10 +3216,10 @@ def _runtime_write_cron_jobs(data: Dict[str, Any]) -> None:
 
 def _runtime_ensure_job_enabled(*, data: Dict[str, Any], job_id: str, expected_script: str, expected_expr: str) -> bool:
     jobs = list(data.get("jobs") or [])
-    changed = False
     for job in jobs:
         if job.get("id") != job_id:
             continue
+        changed = False
         if job.get("script") != expected_script:
             job["script"] = expected_script
             changed = True
@@ -3234,8 +3234,53 @@ def _runtime_ensure_job_enabled(*, data: Dict[str, Any], job_id: str, expected_s
         if job.get("state") != "scheduled":
             job["state"] = "scheduled"
             changed = True
-        break
-    return changed
+        data["jobs"] = jobs
+        return changed
+    jobs.append({
+        "id": job_id,
+        "name": job_id,
+        "prompt": f"Run {expected_script}.",
+        "skills": [],
+        "skill": None,
+        "model": None,
+        "provider": None,
+        "base_url": None,
+        "script": expected_script,
+        "no_agent": True,
+        "context_from": None,
+        "schedule": {"kind": "cron", "expr": expected_expr, "display": expected_expr},
+        "schedule_display": expected_expr,
+        "repeat": {"times": None, "completed": 0},
+        "enabled": True,
+        "state": "scheduled",
+        "paused_at": None,
+        "paused_reason": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "next_run_at": None,
+        "last_run_at": None,
+        "last_status": None,
+        "last_error": None,
+        "last_delivery_error": None,
+        "deliver": "local",
+        "origin": "self_improve",
+        "enabled_toolsets": None,
+        "workdir": None,
+        "profile": None,
+    })
+    data["jobs"] = jobs
+    return True
+
+
+def _runtime_cron_job_matches(job: Optional[Dict[str, Any]], *, expected_script: str, expected_expr: str) -> bool:
+    if not isinstance(job, dict):
+        return False
+    schedule = dict(job.get("schedule") or {})
+    return (
+        bool(job.get("enabled"))
+        and job.get("state") == "scheduled"
+        and job.get("script") == expected_script
+        and schedule.get("expr") == expected_expr
+    )
 
 
 def _runtime_restart_user_service(service_name: str) -> Dict[str, Any]:
@@ -3570,7 +3615,7 @@ def _runtime_self_improve_report(*, create_approval: bool = False, send_telegram
         })
     for job_id, expected_script in {"hermeslivewatch24x7": "hermes_live_watch.py", "hermesselfimprove24x7": "hermes_self_improve.py"}.items():
         job = cron_jobs.get(job_id)
-        if not job or not job.get("enabled") or job.get("script") != expected_script:
+        if not _runtime_cron_job_matches(job, expected_script=expected_script, expected_expr="*/15 * * * *"):
             recommendations.append({
                 "kind": "cron_repair",
                 "summary": f"{job_id} is missing, disabled, or points at the wrong script.",

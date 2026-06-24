@@ -4280,6 +4280,80 @@ def test_runtime_self_improve_report_does_not_recommend_review_when_branch_is_cu
     assert result["report"]["upstream"]["behind"] == 0
 
 
+def test_runtime_self_improve_creates_missing_cron_jobs(monkeypatch):
+    monkeypatch.setattr(tools, "_runtime_service_status", lambda service_name=tools.RUNTIME_SERVICE_NAME: {
+        "active": True,
+        "state": "active",
+        "service": service_name,
+    })
+    monkeypatch.setattr(tools, "_runtime_upstream_status", lambda **kwargs: {
+        "recent_commit_count": 0,
+        "local": {"behind": 0, "origin_ref": "origin/hermes/update-upstream-2026-06-18"},
+    })
+    monkeypatch.setattr(tools, "_runtime_recent_incidents", lambda **kwargs: [])
+    monkeypatch.setattr(tools, "_runtime_detect_candidate_skills", lambda **kwargs: [])
+    tools._write_json(tools.LIVE_WATCH_STATE_PATH, {
+        "ran_at": "2099-05-19T12:00:00+00:00",
+        "operator_brief": {"summary": "operator"},
+        "agi_operator_cycle": {"decision": {"best_move": "stay_quiet"}},
+        "status_message": {"chat_id": "chat", "message_id": 1},
+    })
+    tools._write_json(tools.CRON_JOBS_PATH, {"jobs": []})
+
+    result = _decode(tools.handle_runtime({"action": "self_improve"}))
+    jobs = {job["id"]: job for job in tools._runtime_read_cron_jobs()["jobs"]}
+
+    assert result["success"] is True
+    assert result["actions"][0]["kind"] == "repair_cron_jobs"
+    assert set(result["actions"][0]["jobs"]) == {"hermeslivewatch24x7", "hermesselfimprove24x7"}
+    assert jobs["hermeslivewatch24x7"]["script"] == "hermes_live_watch.py"
+    assert jobs["hermeslivewatch24x7"]["schedule"]["expr"] == "*/15 * * * *"
+    assert jobs["hermesselfimprove24x7"]["script"] == "hermes_self_improve.py"
+
+
+def test_runtime_self_improve_report_does_not_flag_matching_cron_jobs(monkeypatch):
+    monkeypatch.setattr(tools, "_runtime_service_status", lambda service_name=tools.RUNTIME_SERVICE_NAME: {
+        "active": True,
+        "state": "active",
+        "service": service_name,
+    })
+    monkeypatch.setattr(tools, "_runtime_upstream_status", lambda **kwargs: {
+        "recent_commit_count": 0,
+        "local": {"behind": 0, "origin_ref": "origin/hermes/update-upstream-2026-06-18"},
+    })
+    monkeypatch.setattr(tools, "_runtime_recent_incidents", lambda **kwargs: [])
+    monkeypatch.setattr(tools, "_runtime_recent_completed_improvements", lambda **kwargs: [])
+    monkeypatch.setattr(tools, "_runtime_detect_candidate_skills", lambda **kwargs: [])
+    tools._write_json(tools.LIVE_WATCH_STATE_PATH, {
+        "ran_at": "2099-05-19T12:00:00+00:00",
+        "operator_brief": {"summary": "operator"},
+        "agi_operator_cycle": {"decision": {"best_move": "stay_quiet"}},
+        "status_message": {"chat_id": "chat", "message_id": 1},
+    })
+    tools._write_json(tools.CRON_JOBS_PATH, {
+        "jobs": [
+            {
+                "id": "hermeslivewatch24x7",
+                "script": "hermes_live_watch.py",
+                "enabled": True,
+                "state": "scheduled",
+                "schedule": {"kind": "cron", "expr": "*/15 * * * *", "display": "*/15 * * * *"},
+            },
+            {
+                "id": "hermesselfimprove24x7",
+                "script": "hermes_self_improve.py",
+                "enabled": True,
+                "state": "scheduled",
+                "schedule": {"kind": "cron", "expr": "*/15 * * * *", "display": "*/15 * * * *"},
+            },
+        ]
+    })
+
+    result = _decode(tools.handle_runtime({"action": "self_improve_report", "send_telegram": False}))
+
+    assert [item["kind"] for item in result["report"]["recommendations"]] == ["no_action"]
+
+
 def test_stale_self_improve_approvals_are_pruned_from_pending():
     old_ts = 1_777_593_600  # 2026-05-01T00:00:00Z
     fresh_ts = tools._now()
