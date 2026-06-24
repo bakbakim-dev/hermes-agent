@@ -3467,6 +3467,8 @@ def _runtime_self_improve_report_message(report: Dict[str, Any], request_id: Opt
             label = str(item.get("summary") or item.get("message") or item.get("commit") or "").strip()
             if label:
                 lines.append(f"{index}. {label}")
+    if actionable:
+        lines.append("Pending evidence-backed items:")
     for index, item in enumerate(actionable[:5], start=1):
         approval = "approval needed" if item.get("requires_approval") else "safe maintenance"
         lines.append(f"{index}. {item.get('kind')}: {item.get('summary')} ({approval})")
@@ -3577,11 +3579,8 @@ def _runtime_self_improve_report(*, create_approval: bool = False, send_telegram
                 "requires_approval": False,
                 "evidence": job or {"missing": True},
             })
-    if behind > 0 or int(upstream.get("recent_commit_count") or 0) > 0:
-        if behind > 0:
-            upstream_summary = f"Hermes upstream has changes; local checkout is {behind} commit(s) behind {origin_ref}."
-        else:
-            upstream_summary = f"Hermes upstream has recent commits, but the deployed checkout is current with {origin_ref}."
+    if behind > 0:
+        upstream_summary = f"Hermes upstream has changes; local checkout is {behind} commit(s) behind {origin_ref}."
         recommendations.append({
             "kind": "upstream_review",
             "summary": upstream_summary,

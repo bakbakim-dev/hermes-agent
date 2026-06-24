@@ -4243,10 +4243,11 @@ def test_runtime_self_improve_report_message_lists_completed_improvements():
 
     assert "Completed improvements:" in message
     assert "abc123: Fix update status" in message
+    assert "Pending evidence-backed items:" not in message
     assert "Approve:" not in message
 
 
-def test_runtime_self_improve_report_separates_recent_upstream_from_branch_behind(monkeypatch):
+def test_runtime_self_improve_report_does_not_recommend_review_when_branch_is_current(monkeypatch):
     monkeypatch.setattr(tools, "_focus_guard_send_telegram_message", lambda text, **kwargs: {"ok": True})
     monkeypatch.setattr(tools, "_telegram_messages_allowed_now", lambda now_hour=None: True)
     monkeypatch.setattr(tools, "_runtime_service_status", lambda service_name=tools.RUNTIME_SERVICE_NAME: {
@@ -4259,6 +4260,13 @@ def test_runtime_self_improve_report_separates_recent_upstream_from_branch_behin
         "local": {"behind": 0, "origin_ref": "origin/hermes/update-upstream-2026-06-18"},
     })
     monkeypatch.setattr(tools, "_runtime_recent_incidents", lambda **kwargs: [])
+    monkeypatch.setattr(tools, "_runtime_recent_completed_improvements", lambda **kwargs: [])
+    tools._write_json(tools.LIVE_WATCH_STATE_PATH, {
+        "ran_at": "2099-05-19T12:00:00+00:00",
+        "operator_brief": {"summary": "operator"},
+        "agi_operator_cycle": {"decision": {"best_move": "stay_quiet"}},
+        "status_message": {"chat_id": "chat", "message_id": 1},
+    })
 
     result = _decode(tools.handle_runtime({
         "action": "self_improve_report",
@@ -4267,9 +4275,9 @@ def test_runtime_self_improve_report_separates_recent_upstream_from_branch_behin
     }))
 
     upstream_items = [item for item in result["report"]["recommendations"] if item["kind"] == "upstream_review"]
-    assert upstream_items
-    assert "current with origin/hermes/update-upstream-2026-06-18" in upstream_items[0]["summary"]
-    assert "0 commit(s) behind" not in upstream_items[0]["summary"]
+    assert upstream_items == []
+    assert result["report"]["upstream"]["recent_commit_count"] == 68
+    assert result["report"]["upstream"]["behind"] == 0
 
 
 def test_stale_self_improve_approvals_are_pruned_from_pending():
@@ -4349,8 +4357,8 @@ def test_runtime_self_improve_report_throttles_repeat_telegram(monkeypatch):
     })
     monkeypatch.setattr(tools, "_runtime_recent_incidents", lambda **kwargs: [])
 
-    first = _decode(tools.handle_runtime({"action": "self_improve_report", "send_telegram": True}))
-    second = _decode(tools.handle_runtime({"action": "self_improve_report", "send_telegram": True}))
+    first = _decode(tools.handle_runtime({"action": "self_improve_report", "create_approval": True, "send_telegram": True}))
+    second = _decode(tools.handle_runtime({"action": "self_improve_report", "create_approval": True, "send_telegram": True}))
     pending = _decode(tools.handle_security({"action": "list_pending"}))["pending"]
 
     assert first["sent"] is True
