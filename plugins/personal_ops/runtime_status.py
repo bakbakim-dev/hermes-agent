@@ -3298,6 +3298,62 @@ def _runtime_restart_user_service(service_name: str) -> Dict[str, Any]:
     }
 
 
+_FORMALIZED_WORKFLOW_CHECKLISTS: Dict[tuple[str, str], Dict[str, Any]] = {
+    ("location_update", "ios-shortcut"): {
+        "title": "iOS location update",
+        "checklist": [
+            "Treat the event as location context, not proof of availability.",
+            "Update presence/location state deterministically.",
+            "Run only quiet cleanup routines; do not send a proactive nudge just because location changed.",
+        ],
+    },
+    ("wake", "windows-logon-trigger"): {
+        "title": "Windows wake/logon",
+        "checklist": [
+            "Treat this as possible activity, not guaranteed presence.",
+            "Record a low-confidence presence signal.",
+            "Suppress proactive Telegram unless another high-value reason passes policy.",
+        ],
+    },
+    ("gym.arrived", "ios-shortcut"): {
+        "title": "Verified gym arrival",
+        "checklist": [
+            "Require location verification from the iOS shortcut.",
+            "Reject off-schedule lifting days before logging.",
+            "Open or return the matching workout task instead of inventing attendance.",
+        ],
+    },
+    ("gym.arrived", "ios-shortcut-url"): {
+        "title": "Verified gym arrival URL shortcut",
+        "checklist": [
+            "Require location verification from the URL payload.",
+            "Reject off-schedule lifting days before logging.",
+            "Return the matching Todoist workout task/app URL when available.",
+        ],
+    },
+    ("gym.left", "ios-shortcut"): {
+        "title": "Verified gym departure",
+        "checklist": [
+            "Require location verification from the iOS shortcut.",
+            "Reject off-schedule lifting days before logging.",
+            "Avoid auto-completing long/implausible sessions without confirmation.",
+        ],
+    },
+    ("gym.left", "ios-shortcut-url"): {
+        "title": "Verified gym departure URL shortcut",
+        "checklist": [
+            "Require location verification from the URL payload.",
+            "Reject off-schedule lifting days before logging.",
+            "Avoid auto-completing long/implausible sessions without confirmation.",
+        ],
+    },
+}
+
+
+def _runtime_formalized_workflow(event_type: str, source: str) -> Optional[Dict[str, Any]]:
+    return _FORMALIZED_WORKFLOW_CHECKLISTS.get((event_type.strip().lower(), source.strip().lower()))
+
+
 def _runtime_detect_candidate_skills(*, companion_state: Dict[str, Any], runtime_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     candidates: List[Dict[str, Any]] = []
 
@@ -3314,6 +3370,8 @@ def _runtime_detect_candidate_skills(*, companion_state: Dict[str, Any], runtime
 
     for (event_type, source), count in sorted(event_counts.items(), key=lambda pair: (-pair[1], pair[0][0], pair[0][1])):
         if count < 3:
+            continue
+        if _runtime_formalized_workflow(event_type, source):
             continue
         candidates.append(
             {
